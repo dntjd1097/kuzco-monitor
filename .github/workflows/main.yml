@@ -33,7 +33,7 @@ jobs:
                   sudo docker image prune -f
                   sudo docker run -d \
                   --name kuzco-monitor-bot \
-                  -v /home/ubuntu/.kuzco_bot/config.yaml:/app/config.yaml \
+                  -v /home/runner/.kuzco_bot/config.yaml:/app/config.yaml \
                   -e TZ=Asia/Seoul \
                   --restart unless-stopped \
                   kuzco-monitor-bot:latest
