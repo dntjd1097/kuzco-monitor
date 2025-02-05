@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+    kuzco-monitor:
+        build: .
+        container_name: kuzco-monitor
+        volumes:
+            - ./config.yaml:/app/config.yaml:ro
+        restart: unless-stopped
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '10m'
+                max-file: '3'

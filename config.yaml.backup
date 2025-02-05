@@ -1,0 +1,11 @@
+kuzco:
+    id: 'your-email@example.com'
+    password: 'your-password'
+telegram:
+    token: 'your-telegram-bot-token'
+    chat_id: 'your-chat-id'
+    threads:
+        daily: 5 # Daily report thread
+        hourly: 6 # Hourly report thread
+        error: 7 # Error message thread
+        status: 8 # Status message thread
