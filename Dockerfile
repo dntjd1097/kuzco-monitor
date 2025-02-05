@@ -1,9 +1,10 @@
-# Build stage
-FROM golang:1.21-alpine AS builder
+# 빌드 스테이지
+FROM golang:1.23.4-alpine AS builder
 
+# Set working directory
 WORKDIR /app
 
-# Install git for private repositories if needed
+# Install git and build dependencies
 RUN apk add --no-cache git
 
 # Copy go mod and sum files
