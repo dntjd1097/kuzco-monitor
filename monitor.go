@@ -161,34 +161,40 @@ func (m *Monitor) checkWorkerChanges() error {
 				Status:    instance.Status,
 				IPAddress: instance.Info.IPAddress,
 				Runtime:   instance.Info.Runtime,
+				GPUs:      make([]GPUStatus, 0),
 			}
 
-			if instance.Info.NvidiaSmi != nil && len(instance.Info.NvidiaSmi.GPU) > 0 {
-				gpu := instance.Info.NvidiaSmi.GPU[0]
-				if len(gpu.ProductName) > 0 {
-					gpuInfo.GPU.Name = gpu.ProductName[0]
-				}
-				if len(gpu.Temperature) > 0 && len(gpu.Temperature[0].GPUTemp) > 0 {
-					gpuInfo.GPU.Temp = gpu.Temperature[0].GPUTemp[0]
-				}
-				if len(gpu.Utilization) > 0 && len(gpu.Utilization[0].GPUUtil) > 0 {
-					gpuInfo.GPU.Utilization = gpu.Utilization[0].GPUUtil[0]
-				}
-				if len(gpu.FBMemoryUsage) > 0 {
-					if len(gpu.FBMemoryUsage[0].Used) > 0 {
-						gpuInfo.GPU.Memory.Used = gpu.FBMemoryUsage[0].Used[0]
+			if instance.Info.NvidiaSmi != nil {
+				for _, gpu := range instance.Info.NvidiaSmi.GPU {
+					gpuStatus := GPUStatus{}
+
+					if len(gpu.ProductName) > 0 {
+						gpuStatus.Name = gpu.ProductName[0]
 					}
-					if len(gpu.FBMemoryUsage[0].Total) > 0 {
-						gpuInfo.GPU.Memory.Total = gpu.FBMemoryUsage[0].Total[0]
+					if len(gpu.Temperature) > 0 && len(gpu.Temperature[0].GPUTemp) > 0 {
+						gpuStatus.Temp = gpu.Temperature[0].GPUTemp[0]
 					}
-				}
-				if len(gpu.PowerReadings) > 0 {
-					if len(gpu.PowerReadings[0].PowerDraw) > 0 {
-						gpuInfo.GPU.Power.Draw = gpu.PowerReadings[0].PowerDraw[0]
+					if len(gpu.Utilization) > 0 && len(gpu.Utilization[0].GPUUtil) > 0 {
+						gpuStatus.Utilization = gpu.Utilization[0].GPUUtil[0]
 					}
-					if len(gpu.PowerReadings[0].PowerState) > 0 {
-						gpuInfo.GPU.Power.State = gpu.PowerReadings[0].PowerState[0]
+					if len(gpu.FBMemoryUsage) > 0 {
+						if len(gpu.FBMemoryUsage[0].Used) > 0 {
+							gpuStatus.Memory.Used = gpu.FBMemoryUsage[0].Used[0]
+						}
+						if len(gpu.FBMemoryUsage[0].Total) > 0 {
+							gpuStatus.Memory.Total = gpu.FBMemoryUsage[0].Total[0]
+						}
 					}
+					if len(gpu.PowerReadings) > 0 {
+						if len(gpu.PowerReadings[0].PowerDraw) > 0 {
+							gpuStatus.Power.Draw = gpu.PowerReadings[0].PowerDraw[0]
+						}
+						if len(gpu.PowerReadings[0].PowerState) > 0 {
+							gpuStatus.Power.State = gpu.PowerReadings[0].PowerState[0]
+						}
+					}
+
+					gpuInfo.GPUs = append(gpuInfo.GPUs, gpuStatus)
 				}
 			}
 
@@ -204,14 +210,22 @@ func (m *Monitor) checkWorkerChanges() error {
 
 			// 각 인스턴스 정보 추가
 			for _, instance := range worker.Instances {
+				gpuInfo := "GPUs:\n"
+				if instance.Info.NvidiaSmi != nil {
+					for i, gpu := range instance.Info.NvidiaSmi.GPU {
+						if len(gpu.ProductName) > 0 {
+							gpuInfo += fmt.Sprintf("        GPU %d: %s\n", i+1, gpu.ProductName[0])
+						}
+					}
+				}
 				changes = append(changes, fmt.Sprintf("    • Instance: %s\n"+
 					"      Status: %s\n"+
 					"      IP: %s\n"+
-					"      GPU: %s",
+					"      %s",
 					instance.Name,
 					instance.Status,
 					instance.Info.IPAddress,
-					instance.Info.NvidiaSmi.GPU[0].ProductName))
+					gpuInfo))
 			}
 		} else {
 			// 인스턴스 수 변경 확인
@@ -233,13 +247,13 @@ func (m *Monitor) checkWorkerChanges() error {
 							"  Instance: %s\n"+
 							"  Status: %s → %s\n"+
 							"  IP: %s\n"+
-							"  GPU: %s",
+							"  GPUs: %v",
 							worker.Name,
 							currentInstance.Name,
 							prevInstance.Status,
 							currentInstance.Status,
 							currentInstance.IPAddress,
-							currentInstance.GPU.Name))
+							currentInstance.GPUs))
 					}
 					// IP 변경 확인
 					if currentInstance.IPAddress != prevInstance.IPAddress {
@@ -259,12 +273,12 @@ func (m *Monitor) checkWorkerChanges() error {
 						"  Instance: %s\n"+
 						"  Status: %s\n"+
 						"  IP: %s\n"+
-						"  GPU: %s",
+						"  GPUs: %v",
 						worker.Name,
 						currentInstance.Name,
 						currentInstance.Status,
 						currentInstance.IPAddress,
-						currentInstance.GPU.Name))
+						currentInstance.GPUs))
 				}
 			}
 
@@ -276,12 +290,12 @@ func (m *Monitor) checkWorkerChanges() error {
 						"  Instance: %s\n"+
 						"  Last Status: %s\n"+
 						"  Last IP: %s\n"+
-						"  GPU: %s",
+						"  GPUs: %v",
 						worker.Name,
 						prevInstance.Name,
 						prevInstance.Status,
 						prevInstance.IPAddress,
-						prevInstance.GPU.Name))
+						prevInstance.GPUs))
 				}
 			}
 		}
@@ -348,7 +362,7 @@ func (m *Monitor) sendDailyReport() error {
 	report.WriteString("\n")
 
 	// Server Status
-	report.WriteString(fmt.Sprintf("%s\n", bold("🖥️ Server Status")))
+	report.WriteString(fmt.Sprintf("%s\n", bold("��️ Server Status")))
 	report.WriteString(formatMetricLine("Online Workers", code(formatNumber(int64(count)))) + "\n")
 	report.WriteString(formatMetricLine("Server RPM", code(formatNumber(int64(rpm)))) + "\n")
 	report.WriteString(formatMetricLine("Global Tokens (24h)", code(formatNumber(tokens24h))) + "\n\n")
@@ -553,20 +567,31 @@ func (m *Monitor) handleStatusCommand() {
 				if len(instance.PoolAssignments) > 0 {
 					runtime := instance.Info.Runtime
 					lane := instance.PoolAssignments[0].Lane
+
+					// GPU 정보 수집
+					var gpus []GPUStatus
+					if instance.Info.NvidiaSmi != nil {
+						for _, gpu := range instance.Info.NvidiaSmi.GPU {
+							gpuStatus := GPUStatus{}
+							if len(gpu.ProductName) > 0 {
+								gpuStatus.Name = gpu.ProductName[0]
+							}
+							if len(gpu.Temperature) > 0 && len(gpu.Temperature[0].GPUTemp) > 0 {
+								gpuStatus.Temp = gpu.Temperature[0].GPUTemp[0]
+							}
+							if len(gpu.Utilization) > 0 && len(gpu.Utilization[0].GPUUtil) > 0 {
+								gpuStatus.Utilization = gpu.Utilization[0].GPUUtil[0]
+							}
+							gpus = append(gpus, gpuStatus)
+						}
+					}
+
 					status.WriteString(formatInstanceInfo(
 						instance.Name,
 						instance.Status,
 						runtime,
-						lane) + "\n")
-
-					if instance.Info.NvidiaSmi != nil && len(instance.Info.NvidiaSmi.GPU) > 0 {
-						gpu := instance.Info.NvidiaSmi.GPU[0]
-						if len(gpu.ProductName) > 0 {
-							status.WriteString(fmt.Sprintf("  %s: %s\n",
-								italic("GPU"),
-								code(gpu.ProductName[0])))
-						}
-					}
+						lane,
+						gpus) + "\n")
 				}
 			}
 		}
@@ -818,34 +843,41 @@ func (m *Monitor) initializeState() error {
 				Status:    instance.Status,
 				IPAddress: instance.Info.IPAddress,
 				Runtime:   instance.Info.Runtime,
+				GPUs:      make([]GPUStatus, 0),
 			}
 
-			if instance.Info.NvidiaSmi != nil && len(instance.Info.NvidiaSmi.GPU) > 0 {
-				gpu := instance.Info.NvidiaSmi.GPU[0]
-				if len(gpu.ProductName) > 0 {
-					gpuInfo.GPU.Name = gpu.ProductName[0]
-				}
-				if len(gpu.Temperature) > 0 && len(gpu.Temperature[0].GPUTemp) > 0 {
-					gpuInfo.GPU.Temp = gpu.Temperature[0].GPUTemp[0]
-				}
-				if len(gpu.Utilization) > 0 && len(gpu.Utilization[0].GPUUtil) > 0 {
-					gpuInfo.GPU.Utilization = gpu.Utilization[0].GPUUtil[0]
-				}
-				if len(gpu.FBMemoryUsage) > 0 {
-					if len(gpu.FBMemoryUsage[0].Used) > 0 {
-						gpuInfo.GPU.Memory.Used = gpu.FBMemoryUsage[0].Used[0]
+			if instance.Info.NvidiaSmi != nil {
+				// 모든 GPU 정보 수집
+				for _, gpu := range instance.Info.NvidiaSmi.GPU {
+					gpuStatus := GPUStatus{}
+
+					if len(gpu.ProductName) > 0 {
+						gpuStatus.Name = gpu.ProductName[0]
 					}
-					if len(gpu.FBMemoryUsage[0].Total) > 0 {
-						gpuInfo.GPU.Memory.Total = gpu.FBMemoryUsage[0].Total[0]
+					if len(gpu.Temperature) > 0 && len(gpu.Temperature[0].GPUTemp) > 0 {
+						gpuStatus.Temp = gpu.Temperature[0].GPUTemp[0]
 					}
-				}
-				if len(gpu.PowerReadings) > 0 {
-					if len(gpu.PowerReadings[0].PowerDraw) > 0 {
-						gpuInfo.GPU.Power.Draw = gpu.PowerReadings[0].PowerDraw[0]
+					if len(gpu.Utilization) > 0 && len(gpu.Utilization[0].GPUUtil) > 0 {
+						gpuStatus.Utilization = gpu.Utilization[0].GPUUtil[0]
 					}
-					if len(gpu.PowerReadings[0].PowerState) > 0 {
-						gpuInfo.GPU.Power.State = gpu.PowerReadings[0].PowerState[0]
+					if len(gpu.FBMemoryUsage) > 0 {
+						if len(gpu.FBMemoryUsage[0].Used) > 0 {
+							gpuStatus.Memory.Used = gpu.FBMemoryUsage[0].Used[0]
+						}
+						if len(gpu.FBMemoryUsage[0].Total) > 0 {
+							gpuStatus.Memory.Total = gpu.FBMemoryUsage[0].Total[0]
+						}
 					}
+					if len(gpu.PowerReadings) > 0 {
+						if len(gpu.PowerReadings[0].PowerDraw) > 0 {
+							gpuStatus.Power.Draw = gpu.PowerReadings[0].PowerDraw[0]
+						}
+						if len(gpu.PowerReadings[0].PowerState) > 0 {
+							gpuStatus.Power.State = gpu.PowerReadings[0].PowerState[0]
+						}
+					}
+
+					gpuInfo.GPUs = append(gpuInfo.GPUs, gpuStatus)
 				}
 			}
 
@@ -1063,7 +1095,6 @@ func (m *Monitor) sendHourlyReport() error {
 				code(formatNumber(previous.TokensCount)),
 				code(formatNumber(current.TokensCount)),
 				code(formatNumber(tokenChange)),
-				code(fmt.Sprintf("%.1f", float64(tokenChange)/float64(activeInstances))),
 				code(formatPercentage(hourlyShare)),
 			))
 		}
@@ -1100,12 +1131,24 @@ func formatWorkerHeader(name string, instances int) string {
 	return fmt.Sprintf("\n%s %s (%d instances):", bold("📦"), bold(name), instances)
 }
 
-func formatInstanceInfo(name, status, runtime, lane string) string {
-	return fmt.Sprintf("- %s (%s)\n  %s-%s",
+func formatInstanceInfo(name, status, runtime, lane string, gpus []GPUStatus) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("- %s (%s)\n  %s-%s",
 		code(name),
 		status,
 		italic(runtime),
-		italic(lane))
+		italic(lane)))
+
+	if len(gpus) > 0 {
+		for i, gpu := range gpus {
+			sb.WriteString(fmt.Sprintf("\n  %s %d: %s",
+				italic("GPU"),
+				i+1,
+				code(gpu.Name)))
+		}
+	}
+
+	return sb.String()
 }
 
 func formatMetricLine(label string, value interface{}) string {
@@ -1157,7 +1200,7 @@ func formatDailyReport(
 	report.WriteString("\n")
 
 	// Server Status
-	report.WriteString(fmt.Sprintf("%s\n", bold("🖥️ Server Status")))
+	report.WriteString(fmt.Sprintf("%s\n", bold("��️ Server Status")))
 	report.WriteString(formatMetricLine("Online Workers", code(formatNumber(int64(count)))) + "\n")
 	report.WriteString(formatMetricLine("Server RPM", code(formatNumber(int64(rpm)))) + "\n")
 	report.WriteString(formatMetricLine("Global Tokens (24h)", code(formatNumber(tokens24h))) + "\n\n")

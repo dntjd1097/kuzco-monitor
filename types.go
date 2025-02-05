@@ -192,25 +192,28 @@ type WorkerListResponse struct {
 	} `json:"result"`
 }
 
+// GPU 정보를 담는 구조체
+type GPUStatus struct {
+	Name        string
+	Temp        string
+	Utilization string
+	Memory      struct {
+		Used  string
+		Total string
+	}
+	Power struct {
+		Draw  string
+		State string
+	}
+}
+
 // 워커 상태 추적을 위한 구조체
 type InstanceStatus struct {
 	Name      string
 	Status    string
 	IPAddress string
 	Runtime   string
-	GPU       struct {
-		Name        string
-		Temp        string
-		Utilization string
-		Memory      struct {
-			Used  string
-			Total string
-		}
-		Power struct {
-			Draw  string
-			State string
-		}
-	}
+	GPUs      []GPUStatus  // 단일 GPU에서 GPU 배열로 변경
 }
 
 type TokenMetrics struct {
