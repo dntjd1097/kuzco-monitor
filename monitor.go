@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,22 @@ type TelegramUpdates struct {
 	Result []TelegramUpdate `json:"result"`
 }
 
+// 워커와 메트릭을 함께 담을 구조체
+type WorkerWithMetrics struct {
+	Worker        Worker
+	Metrics       *WorkerMetricsResponse
+	TokensLast24h int64
+}
+
+// 정렬을 위한 슬라이스 타입
+type WorkerMetricsList []WorkerWithMetrics
+
+func (w WorkerMetricsList) Len() int      { return len(w) }
+func (w WorkerMetricsList) Swap(i, j int) { w[i], w[j] = w[j], w[i] }
+func (w WorkerMetricsList) Less(i, j int) bool {
+	return w[i].TokensLast24h > w[j].TokensLast24h // 내림차순 정렬
+}
+
 func NewMonitor(config *Config, logMessage func(string)) *Monitor {
 	m := &Monitor{
 		config:     config,
@@ -65,8 +82,7 @@ func (m *Monitor) refreshAuthIfNeeded() error {
 	return nil
 }
 
-func (m *Monitor) sendTelegramMessage(message string, threadType string) error {
-	// ChatID를 int64로 변환
+func (m *Monitor) sendTelegramMessage(message string, messageType string) error {
 	chatID, err := strconv.ParseInt(m.config.Telegram.ChatID, 10, 64)
 	if err != nil {
 		m.logMessage(fmt.Sprintf("❌ Error parsing chat ID: %v", err))
@@ -80,9 +96,22 @@ func (m *Monitor) sendTelegramMessage(message string, threadType string) error {
 		"parse_mode": "HTML",
 	}
 
-	// MessageThread가 0이 아닌 경우에만 추가
-	if m.config.Telegram.MessageThread != 0 {
-		body["message_thread_id"] = m.config.Telegram.MessageThread
+	// 메시지 타입에 따라 적절한 thread_id 선택
+	var threadID int
+	switch messageType {
+	case "daily":
+		threadID = m.config.Telegram.Threads.Daily
+	case "hourly":
+		threadID = m.config.Telegram.Threads.Hourly
+	case "error":
+		threadID = m.config.Telegram.Threads.Error
+	case "status":
+		threadID = m.config.Telegram.Threads.Status
+	}
+
+	// thread_id가 0이 아닌 경우에만 추가
+	if threadID != 0 {
+		body["message_thread_id"] = threadID
 	}
 
 	respBody, err := m.service.client.doRequest("POST", url, body)
@@ -91,7 +120,6 @@ func (m *Monitor) sendTelegramMessage(message string, threadType string) error {
 		return err
 	}
 
-	// 응답 확인
 	var response struct {
 		Ok          bool   `json:"ok"`
 		Description string `json:"description"`
@@ -659,13 +687,13 @@ func (m *Monitor) Start() {
 		return
 	}
 
-	// 초기 텔레그램 연결 테스트
-	testMessage := "🚀 Monitor service started"
-	if err := m.sendTelegramMessage(testMessage, "status"); err != nil {
-		m.logMessage(fmt.Sprintf("❌ Initial telegram test failed: %v", err))
-	} else {
-		m.logMessage("✅ Initial telegram test successful")
-	}
+	// // 초기 텔레그램 연결 테스트
+	// testMessage := "🚀 Monitor service started"
+	// if err := m.sendTelegramMessage(testMessage, "status"); err != nil {
+	// 	m.logMessage(fmt.Sprintf("❌ Initial telegram test failed: %v", err))
+	// } else {
+	// 	m.logMessage("✅ Initial telegram test successful")
+	// }
 
 	// 초기 인증
 	if err := m.refreshAuthIfNeeded(); err != nil {
@@ -683,13 +711,13 @@ func (m *Monitor) Start() {
 	}
 	m.logMessage("✅ Initial state setup successful")
 
-	// 커맨드 처리 고루틴 추가
+	// 커맨드 처리 고루틴
 	go func() {
 		m.logMessage("Starting command handler")
 		m.handleCommands()
 	}()
 
-	// 1분마다 워커 상태 체크
+	// 1분마다 워커 상태 체크 추가
 	go func() {
 		m.logMessage("Starting worker status checker")
 		ticker := time.NewTicker(1 * time.Minute)
@@ -706,9 +734,25 @@ func (m *Monitor) Start() {
 		}
 	}()
 
-	// 24시간마다 리포트 전송
+	// 24시간마다 리포트 전송 (UTC 00:00에 전송)
 	go func() {
 		m.logMessage("Starting daily report scheduler")
+
+		// 다음 UTC 00:00까지 대기할 시간 계산
+		now := time.Now().UTC()
+		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+		duration := nextMidnight.Sub(now)
+
+		// 첫 실행까지 대기
+		time.Sleep(duration)
+
+		// 첫 리포트 전송
+		if err := m.sendDailyReport(); err != nil {
+			m.logMessage(fmt.Sprintf("❌ Daily report failed: %v", err))
+			m.sendErrorAlert(err)
+		}
+
+		// 이후 24시간마다 실행
 		ticker := time.NewTicker(24 * time.Hour)
 		for range ticker.C {
 			if err := m.sendDailyReport(); err != nil {
@@ -718,9 +762,29 @@ func (m *Monitor) Start() {
 		}
 	}()
 
-	// 1시간마다 토큰 리포트 전송
+	// 매시간 5분에 토큰 리포트 전송
 	go func() {
 		m.logMessage("Starting hourly token report scheduler")
+
+		// 다음 시각의 5분까지 대기할 시간 계산
+		now := time.Now()
+		nextHour := time.Date(now.Year(), now.Month(), now.Day(), now.Hour()+1, 5, 0, 0, time.Local)
+		if now.Minute() < 5 {
+			// 현재 시각이 5분 이전이면 현재 시각의 5분으로 설정
+			nextHour = time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 5, 0, 0, time.Local)
+		}
+		duration := nextHour.Sub(now)
+
+		// 첫 실행까지 대기
+		time.Sleep(duration)
+
+		// 첫 리포트 전송
+		if err := m.sendHourlyReport(); err != nil {
+			m.logMessage(fmt.Sprintf("❌ Hourly report failed: %v", err))
+			m.sendErrorAlert(err)
+		}
+
+		// 이후 1시간마다 실행
 		ticker := time.NewTicker(1 * time.Hour)
 		for range ticker.C {
 			if err := m.sendHourlyReport(); err != nil {
@@ -900,27 +964,8 @@ func (m *Monitor) sendHourlyReport() error {
 	globalTokenChange, _ := m.calculateTokenChanges(currentGlobal, m.state.TokenCache.GlobalTokens)
 	userTokenChange, userGenChange := m.calculateTokenChanges(currentUser, m.state.TokenCache.UserTokens)
 
-	// 리포트 생성
-	report := strings.Builder{}
-	report.WriteString("⏰ Hourly Token Report\n\n")
-
-	report.WriteString(fmt.Sprintf("Global Changes (Last Hour):\n"))
-	report.WriteString(fmt.Sprintf("- Tokens: %d → %d (Δ%d)\n\n",
-		m.state.TokenCache.GlobalTokens.TokensCount,
-		currentGlobal.TokensCount,
-		globalTokenChange))
-
-	report.WriteString("User Changes (Last Hour):\n")
-	report.WriteString(fmt.Sprintf("- Generations: %d → %d (Δ%d)\n",
-		m.state.TokenCache.UserTokens.GenerationsCount,
-		currentUser.GenerationsCount,
-		userGenChange))
-	report.WriteString(fmt.Sprintf("- Tokens: %d → %d (Δ%d)\n\n",
-		m.state.TokenCache.UserTokens.TokensCount,
-		currentUser.TokensCount,
-		userTokenChange))
-
-	report.WriteString("Worker Changes (Last Hour):\n")
+	// 워커 메트릭 수집 및 정렬
+	var workersList WorkerMetricsList
 	for _, worker := range workers {
 		if worker.IsArchived {
 			continue
@@ -930,6 +975,42 @@ func (m *Monitor) sendHourlyReport() error {
 		if err != nil {
 			continue
 		}
+
+		workersList = append(workersList, WorkerWithMetrics{
+			Worker:        worker,
+			Metrics:       metrics,
+			TokensLast24h: metrics.Result.Data.JSON.TokensLast24Hours,
+		})
+	}
+	sort.Sort(workersList)
+
+	// 리포트 생성
+	report := strings.Builder{}
+	report.WriteString("⏰ Hourly Token Report\n\n")
+
+	report.WriteString(fmt.Sprintf("Global Changes (Last Hour):\n"))
+	report.WriteString(fmt.Sprintf("- Tokens: %s → %s (Δ%s)\n\n",
+		code(formatNumber(m.state.TokenCache.GlobalTokens.TokensCount)),
+		code(formatNumber(currentGlobal.TokensCount)),
+		code(formatNumber(globalTokenChange)),
+	))
+
+	report.WriteString("User Changes (Last Hour):\n")
+	report.WriteString(fmt.Sprintf("- Generations: %s → %s (Δ%s)\n",
+		code(formatNumber(m.state.TokenCache.UserTokens.GenerationsCount)),
+		code(formatNumber(currentUser.GenerationsCount)),
+		code(formatNumber(userGenChange)),
+	))
+	report.WriteString(fmt.Sprintf("- Tokens: %s → %s (Δ%s)\n\n",
+		code(formatNumber(m.state.TokenCache.UserTokens.TokensCount)),
+		code(formatNumber(currentUser.TokensCount)),
+		code(formatNumber(userTokenChange)),
+	))
+
+	report.WriteString("Worker Changes (Last Hour):\n")
+	for _, workerWithMetrics := range workersList {
+		worker := workerWithMetrics.Worker
+		metrics := workerWithMetrics.Metrics
 
 		current := TokenMetrics{
 			GenerationsCount: int64(metrics.Result.Data.JSON.GenerationsLast24Hours),
@@ -961,27 +1042,30 @@ func (m *Monitor) sendHourlyReport() error {
 			report.WriteString(fmt.Sprintf("\n%s (%d instances):\n", worker.Name, activeInstances))
 
 			// 24시간 총량 표시 (비중 포함)
-			report.WriteString(fmt.Sprintf("- Total Generations (24h): %d (%.1f/instance)\n",
-				current.GenerationsCount,
-				float64(current.GenerationsCount)/float64(activeInstances)))
-			report.WriteString(fmt.Sprintf("- Total Tokens (24h): %d (%.1f/instance, %s)\n",
-				current.TokensCount,
-				float64(current.TokensCount)/float64(activeInstances),
-				formatPercentage(totalShare)))
+			report.WriteString(fmt.Sprintf("- Total Generations (24h): %s (%s/instance)\n",
+				code(formatNumber(current.GenerationsCount)),
+				code(fmt.Sprintf("%.1f", float64(current.GenerationsCount)/float64(activeInstances))),
+			))
+			report.WriteString(fmt.Sprintf("- Total Tokens (24h): %s (%s/instance, %s)\n",
+				code(formatNumber(current.TokensCount)),
+				code(formatPercentage(totalShare)),
+			))
 
 			// 시간당 변화량 표시 (비중 포함)
 			report.WriteString(fmt.Sprintf("- Hourly Changes:\n"))
-			report.WriteString(fmt.Sprintf("  • Generations: %d → %d (Δ%d, %.1f/instance)\n",
-				previous.GenerationsCount,
-				current.GenerationsCount,
-				genChange,
-				float64(genChange)/float64(activeInstances)))
-			report.WriteString(fmt.Sprintf("  • Tokens: %d → %d (Δ%d, %.1f/instance, %s)\n",
-				previous.TokensCount,
-				current.TokensCount,
-				tokenChange,
-				float64(tokenChange)/float64(activeInstances),
-				formatPercentage(hourlyShare)))
+			report.WriteString(fmt.Sprintf("  • Generations: %s → %s (Δ%s, %s/instance)\n",
+				code(formatNumber(previous.GenerationsCount)),
+				code(formatNumber(current.GenerationsCount)),
+				code(formatNumber(genChange)),
+				code(fmt.Sprintf("%.1f", float64(genChange)/float64(activeInstances))),
+			))
+			report.WriteString(fmt.Sprintf("  • Tokens: %s → %s (Δ%s, %s/instance, %s)\n",
+				code(formatNumber(previous.TokensCount)),
+				code(formatNumber(current.TokensCount)),
+				code(formatNumber(tokenChange)),
+				code(fmt.Sprintf("%.1f", float64(tokenChange)/float64(activeInstances))),
+				code(formatPercentage(hourlyShare)),
+			))
 		}
 
 		// 캐시 업데이트
@@ -1051,6 +1135,23 @@ func formatDailyReport(
 	userMetrics *UserMetricsResponse,
 	workers []Worker) string {
 
+	// 워커 메트릭 수집 및 정렬
+	var workersList WorkerMetricsList
+	for _, worker := range workers {
+		if !worker.IsArchived {
+			metrics, err := getWorkerMetrics(token, worker.ID)
+			if err != nil {
+				continue
+			}
+			workersList = append(workersList, WorkerWithMetrics{
+				Worker:        worker,
+				Metrics:       metrics,
+				TokensLast24h: metrics.Result.Data.JSON.TokensLast24Hours,
+			})
+		}
+	}
+	sort.Sort(workersList)
+
 	report := strings.Builder{}
 	report.WriteString(formatReportHeader("Daily"))
 	report.WriteString("\n")
@@ -1071,57 +1172,53 @@ func formatDailyReport(
 			code(formatPercentage(userTokenShare)))) + "\n")
 	report.WriteString(formatMetricLine("Total Tokens", code(formatNumber(userMetrics.Result.Data.JSON.TokensAllTime))) + "\n\n")
 
-	// Active Workers
+	// Active Workers (정렬된 순서로 출력)
 	report.WriteString(fmt.Sprintf("%s\n", bold("🔧 Active Workers")))
-	for _, worker := range workers {
-		if !worker.IsArchived {
-			metrics, err := getWorkerMetrics(token, worker.ID)
-			if err != nil {
-				continue
+	for _, workerWithMetrics := range workersList {
+		worker := workerWithMetrics.Worker
+		metrics := workerWithMetrics.Metrics
+
+		// 워커의 토큰 비중 계산
+		tokenShare := float64(metrics.Result.Data.JSON.TokensLast24Hours) / float64(tokens24h) * 100
+
+		// 인스턴스당 평균 계산
+		activeInstances := 0
+		for _, instance := range worker.Instances {
+			if instance.Status == "Running" {
+				activeInstances++
 			}
-
-			// 워커의 토큰 비중 계산
-			tokenShare := float64(metrics.Result.Data.JSON.TokensLast24Hours) / float64(tokens24h) * 100
-
-			// 인스턴스당 평균 계산
-			activeInstances := 0
-			for _, instance := range worker.Instances {
-				if instance.Status == "Running" {
-					activeInstances++
-				}
-			}
-			if activeInstances == 0 {
-				activeInstances = 1
-			}
-
-			// 인스턴스당 비중 계산
-			instanceShare := tokenShare / float64(activeInstances)
-
-			report.WriteString(fmt.Sprintf("\n%s\n", formatWorkerHeader(worker.Name, activeInstances)))
-
-			// Generations
-			genPerInstance := float64(metrics.Result.Data.JSON.GenerationsLast24Hours) / float64(activeInstances)
-			report.WriteString(formatMetricLine("Generations (24h)",
-				fmt.Sprintf("%s (%s/instance)",
-					code(formatNumber(int64(metrics.Result.Data.JSON.GenerationsLast24Hours))),
-					code(fmt.Sprintf("%.1f", genPerInstance)))) + "\n")
-
-			// Tokens
-			tokenPerInstance := float64(metrics.Result.Data.JSON.TokensLast24Hours) / float64(activeInstances)
-			report.WriteString(formatMetricLine("Tokens (24h)",
-				fmt.Sprintf("%s (%s/instance)",
-					code(formatNumber(metrics.Result.Data.JSON.TokensLast24Hours)),
-					code(fmt.Sprintf("%.1f", tokenPerInstance)))) + "\n")
-
-			// Share
-			report.WriteString(fmt.Sprintf("  %s %s (total), %s/instance\n",
-				bold("•"),
-				code(formatPercentage(tokenShare)),
-				code(formatPercentage(instanceShare))))
-
-			// Total Tokens
-			report.WriteString(formatMetricLine("Total Tokens", code(formatNumber(metrics.Result.Data.JSON.TokensAllTime))) + "\n")
 		}
+		if activeInstances == 0 {
+			activeInstances = 1
+		}
+
+		// 인스턴스당 비중 계산
+		instanceShare := tokenShare / float64(activeInstances)
+
+		report.WriteString(fmt.Sprintf("\n%s\n", formatWorkerHeader(worker.Name, activeInstances)))
+
+		// Generations
+		genPerInstance := float64(metrics.Result.Data.JSON.GenerationsLast24Hours) / float64(activeInstances)
+		report.WriteString(formatMetricLine("Generations (24h)",
+			fmt.Sprintf("%s (%s/instance)",
+				code(formatNumber(int64(metrics.Result.Data.JSON.GenerationsLast24Hours))),
+				code(fmt.Sprintf("%.1f", genPerInstance)))) + "\n")
+
+		// Tokens
+		tokenPerInstance := float64(metrics.Result.Data.JSON.TokensLast24Hours) / float64(activeInstances)
+		report.WriteString(formatMetricLine("Tokens (24h)",
+			fmt.Sprintf("%s (%s/instance)",
+				code(formatNumber(metrics.Result.Data.JSON.TokensLast24Hours)),
+				code(fmt.Sprintf("%.1f", tokenPerInstance)))) + "\n")
+
+		// Share
+		report.WriteString(fmt.Sprintf("  %s %s (total), %s/instance\n",
+			bold("•"),
+			code(formatPercentage(tokenShare)),
+			code(formatPercentage(instanceShare))))
+
+		// Total Tokens
+		report.WriteString(formatMetricLine("Total Tokens", code(formatNumber(metrics.Result.Data.JSON.TokensAllTime))) + "\n")
 	}
 
 	return report.String()

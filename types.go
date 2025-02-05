@@ -4,9 +4,14 @@ import "time"
 
 // Config 관련 구조체
 type TelegramConfig struct {
-	BotToken      string `yaml:"token"`
-	ChatID        string `yaml:"chat_id"`
-	MessageThread int    `yaml:"message_thread"` // thread_ids 대신 단일 thread 사용
+	BotToken string `yaml:"token"`
+	ChatID   string `yaml:"chat_id"`
+	Threads  struct {
+		Daily   int `yaml:"daily"`
+		Hourly  int `yaml:"hourly"`
+		Error   int `yaml:"error"`
+		Status  int `yaml:"status"`
+	} `yaml:"threads"`
 }
 
 type Config struct {
