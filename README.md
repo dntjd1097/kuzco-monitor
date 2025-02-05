@@ -36,7 +36,7 @@ A monitoring service for Kuzco workers with Telegram notifications. This service
 1. **Clone the repository**
 
     ```bash
-    git clone https://github.com/yourusername/kuzco-monitor.git
+    git clone https://github.com/dntjd1097/kuzco-monitor.git
     cd kuzco-monitor
     ```
 
