@@ -1,0 +1,39 @@
+name: Deploy to Production
+
+on:
+    push:
+        branches:
+            - main
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    deploy:
+        runs-on: self-hosted
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Build Docker image
+              run: sudo docker build -t kuzco-monitor-bot:latest .
+              working-directory: .
+
+            - name: Stop previous Docker container
+              run: sudo docker stop -t 10 kuzco-monitor-bot || true
+              continue-on-error: true
+
+            - name: Remove previous Docker container
+              run: sudo docker rm kuzco-monitor-bot || true
+              continue-on-error: true
+
+            - name: Run Docker container
+              run: |
+                  sudo docker image prune -f
+                  sudo docker run -d \
+                  --name kuzco-monitor-bot \
+                  -v /home/ubuntu/.kuzco_bot/config.yaml:/app/config.yaml \
+                  -e TZ=Asia/Seoul \
+                  --restart unless-stopped \
+                  kuzco-monitor-bot:latest
