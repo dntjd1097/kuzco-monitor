@@ -13,7 +13,7 @@ import (
 
 func getOnlineWorkers(token string) (int, error) {
 	// URL 생성
-	url := "https://relay.kuzco.xyz/api/trpc/instance.countOnline?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
+	url := "https://relay.inference.supply/api/trpc/instance.countOnline?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
 
 	// HTTP GET 요청 준비
 	req, err := http.NewRequest("GET", url, nil)
@@ -54,7 +54,7 @@ func getOnlineWorkers(token string) (int, error) {
 
 func getServerRPM(token string) (int, error) {
 	// URL 생성
-	url := "https://relay.kuzco.xyz/api/trpc/metrics.rpm?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
+	url := "https://relay.inference.supply/api/trpc/metrics.rpm?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
 
 	// HTTP GET 요청 준비
 	req, err := http.NewRequest("GET", url, nil)
@@ -95,7 +95,7 @@ func getServerRPM(token string) (int, error) {
 
 func getTokensLast24Hours(token string) (int64, error) {
 	// URL 생성
-	url := "https://relay.kuzco.xyz/api/trpc/metrics.globalWorker?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
+	url := "https://relay.inference.supply/api/trpc/metrics.globalWorker?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
 
 	// HTTP GET 요청 준비
 	req, err := http.NewRequest("GET", url, nil)
@@ -136,7 +136,7 @@ func getTokensLast24Hours(token string) (int64, error) {
 
 func getUserMetrics(token string, userId string) (*UserMetricsResponse, error) {
 	// URL 생성
-	url := fmt.Sprintf("https://relay.kuzco.xyz/api/trpc/metrics.user?batch=1&input={\"0\":{\"json\":{\"userId\":\"%s\"}}}", userId)
+	url := fmt.Sprintf("https://relay.inference.supply/api/trpc/metrics.user?batch=1&input={\"0\":{\"json\":{\"userId\":\"%s\"}}}", userId)
 
 	// HTTP GET 요청 준비
 	req, err := http.NewRequest("GET", url, nil)
@@ -177,7 +177,7 @@ func getUserMetrics(token string, userId string) (*UserMetricsResponse, error) {
 
 func getActiveWorkers(token string) ([]Worker, error) {
 	// URL 생성
-	url := "https://relay.kuzco.xyz/api/trpc/worker.list?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
+	url := "https://relay.inference.supply/api/trpc/worker.list?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
 
 	// HTTP GET 요청 준비
 	req, err := http.NewRequest("GET", url, nil)
@@ -235,7 +235,7 @@ func getActiveWorkers(token string) ([]Worker, error) {
 
 func getWorkerMetrics(token string, workerId string) (*WorkerMetricsResponse, error) {
 	// URL 생성
-	url := fmt.Sprintf("https://relay.kuzco.xyz/api/trpc/metrics.worker?batch=1&input={\"0\":{\"json\":{\"workerId\":\"%s\"}}}", workerId)
+	url := fmt.Sprintf("https://relay.inference.supply/api/trpc/metrics.worker?batch=1&input={\"0\":{\"json\":{\"workerId\":\"%s\"}}}", workerId)
 
 	// HTTP GET 요청 준비
 	req, err := http.NewRequest("GET", url, nil)

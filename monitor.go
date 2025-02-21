@@ -171,29 +171,6 @@ func (m *Monitor) checkWorkerChanges() error {
 					if len(gpu.ProductName) > 0 {
 						gpuStatus.Name = gpu.ProductName[0]
 					}
-					if len(gpu.Temperature) > 0 && len(gpu.Temperature[0].GPUTemp) > 0 {
-						gpuStatus.Temp = gpu.Temperature[0].GPUTemp[0]
-					}
-					if len(gpu.Utilization) > 0 && len(gpu.Utilization[0].GPUUtil) > 0 {
-						gpuStatus.Utilization = gpu.Utilization[0].GPUUtil[0]
-					}
-					if len(gpu.FBMemoryUsage) > 0 {
-						if len(gpu.FBMemoryUsage[0].Used) > 0 {
-							gpuStatus.Memory.Used = gpu.FBMemoryUsage[0].Used[0]
-						}
-						if len(gpu.FBMemoryUsage[0].Total) > 0 {
-							gpuStatus.Memory.Total = gpu.FBMemoryUsage[0].Total[0]
-						}
-					}
-					if len(gpu.PowerReadings) > 0 {
-						if len(gpu.PowerReadings[0].PowerDraw) > 0 {
-							gpuStatus.Power.Draw = gpu.PowerReadings[0].PowerDraw[0]
-						}
-						if len(gpu.PowerReadings[0].PowerState) > 0 {
-							gpuStatus.Power.State = gpu.PowerReadings[0].PowerState[0]
-						}
-					}
-
 					gpuInfo.GPUs = append(gpuInfo.GPUs, gpuStatus)
 				}
 			}
