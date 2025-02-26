@@ -24,8 +24,9 @@ FROM alpine:latest
 
 WORKDIR /app
 
-# Copy the binary from builder
+# Copy the binary and config files
 COPY --from=builder /app/kuzco-monitor .
+COPY instance.json .
 
 # Create config directory and set permissions
 RUN mkdir -p /app/config && \
