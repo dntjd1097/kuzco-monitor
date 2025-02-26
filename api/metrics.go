@@ -165,7 +165,9 @@ type MinuteMetrics struct {
 		TotalInstances         int                   `json:"totalInstances"`       // Vast.ai API의 instances_found
 		ActualTotalInstances   int                   `json:"actualTotalInstances"` // 기존 Kuzco의 totalInstances
 		InstancesMismatch      bool                  `json:"instancesMismatch"`    // 두 값이 다른 경우 true
-		TotalDailyCost         float64               `json:"totalDailyCost"`
+		KuzcoDailyCost         float64               `json:"kuzcoDailyCost"`       // instance.json 기반 예상 비용
+		VastaiDailyCost        float64               `json:"vastaiDailyCost"`      // Vast.ai API에서 가져온 실제 비용
+		TotalDailyCost         float64               `json:"totalDailyCost"`       // 최종 사용될 비용
 		TokensPerInstance      int64                 `json:"tokensPerInstance"`
 		Share                  float64               `json:"share"`
 		GenerationLastHour     int                   `json:"generationLastHour"`
@@ -539,7 +541,27 @@ func (m *Client) collectMinuteMetrics(userID string, vastaiToken string, include
 		mm.User.TotalInstances = mm.User.ActualTotalInstances
 	}
 
-	mm.User.TotalDailyCost = metrics.User.TotalDailyCost
+	// Calculate Kuzco daily cost from instance.json
+	mm.User.KuzcoDailyCost = metrics.User.TotalDailyCost
+
+	// Get Vast.ai cost if enabled
+	if vastaiToken != "" && includeVastaiCost {
+		vastaiClient := NewVastaiClient(vastaiToken)
+		vastaiCost, err := vastaiClient.GetDailyCost()
+		if err != nil {
+			log.Printf("Failed to get vastai cost: %v", err)
+			mm.User.VastaiDailyCost = 0
+		} else {
+			mm.User.VastaiDailyCost = vastaiCost
+		}
+
+		// Use Vast.ai cost as total cost
+		mm.User.TotalDailyCost = mm.User.VastaiDailyCost
+	} else {
+		// Use Kuzco cost as total cost
+		mm.User.TotalDailyCost = mm.User.KuzcoDailyCost
+	}
+
 	mm.User.TokensPerInstance = metrics.User.TokensPerInstance
 	mm.User.Share = metrics.User.Share
 	if len(metrics.User.GenerationsHistory) > 0 {
