@@ -1,0 +1,46 @@
+[
+    {
+        "Gpu": "RTX 3090",
+        "Price": 0.21
+    },
+    {
+        "Gpu": "RTX 4090",
+        "Price": 0.34
+    },
+    {
+        "Gpu": "RTX 4080S",
+        "Price": 0.236
+    },
+    {
+        "Gpu": "RTX 4060 Ti",
+        "Price": 0.139
+    },
+    {
+        "Gpu": "RTX 4060",
+        "Price": 0.147
+    },
+    {
+        "Gpu": "RTX 3060",
+        "Price": 0.083
+    },
+    {
+        "Gpu": "RTX 3060 Ti",
+        "Price": 0.087
+    },
+    {
+        "Gpu": "RTX 3070",
+        "Price": 0.096
+    },
+    {
+        "Gpu": "RTX 3080 Ti",
+        "Price": 0.12
+    },
+    {
+        "Gpu": "RTX 3080",
+        "Price": 0.142
+    },
+    {
+        "Gpu": "RTX 3070 Ti",
+        "Price": 0.152
+    }
+]

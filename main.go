@@ -1,331 +1,261 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"log"
 	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
+	"test/api"
+	"test/config"
+	"test/telegram"
 	"time"
 
-	"gopkg.in/yaml.v2"
+	"github.com/joho/godotenv"
 )
 
-func getOnlineWorkers(token string) (int, error) {
-	// URL 생성
-	url := "https://relay.inference.supply/api/trpc/instance.countOnline?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
+var (
+	currentMetrics *api.MinuteMetrics
+	metricsLock    sync.Mutex
+)
 
-	// HTTP GET 요청 준비
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("error creating request: %v", err)
-	}
-
-	// 헤더 설정
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// 요청 보내기
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("error making request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// 응답 읽기
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("error reading response: %v", err)
-	}
-
-	// 응답 파싱
-	var countResp []CountOnlineResponse
-	err = json.Unmarshal(body, &countResp)
-	if err != nil {
-		return 0, fmt.Errorf("error parsing response: %v", err)
-	}
-
-	if len(countResp) > 0 {
-		return countResp[0].Result.Data.JSON.Count, nil
-	}
-
-	return 0, fmt.Errorf("no response received")
+// updateCurrentMetrics safely updates the current metrics
+func updateCurrentMetrics(mm api.MinuteMetrics) {
+	metricsLock.Lock()
+	defer metricsLock.Unlock()
+	currentMetrics = &mm
 }
 
-func getServerRPM(token string) (int, error) {
-	// URL 생성
-	url := "https://relay.inference.supply/api/trpc/metrics.rpm?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
-
-	// HTTP GET 요청 준비
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("error creating request: %v", err)
-	}
-
-	// 헤더 설정
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// 요청 보내기
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("error making request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// 응답 읽기
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("error reading response: %v", err)
-	}
-
-	// 응답 파싱
-	var rpmResp []RPMResponse
-	err = json.Unmarshal(body, &rpmResp)
-	if err != nil {
-		return 0, fmt.Errorf("error parsing response: %v", err)
-	}
-
-	if len(rpmResp) > 0 {
-		return rpmResp[0].Result.Data.JSON, nil
-	}
-
-	return 0, fmt.Errorf("no response received")
+// getCurrentMetrics safely retrieves the current metrics
+func getCurrentMetrics() *api.MinuteMetrics {
+	metricsLock.Lock()
+	defer metricsLock.Unlock()
+	return currentMetrics
 }
 
-func getTokensLast24Hours(token string) (int64, error) {
-	// URL 생성
-	url := "https://relay.inference.supply/api/trpc/metrics.globalWorker?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
-
-	// HTTP GET 요청 준비
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("error creating request: %v", err)
-	}
-
-	// 헤더 설정
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// 요청 보내기
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("error making request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// 응답 읽기
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("error reading response: %v", err)
-	}
-
-	// 응답 파싱
-	var workerResp []GlobalWorkerResponse
-	err = json.Unmarshal(body, &workerResp)
-	if err != nil {
-		return 0, fmt.Errorf("error parsing response: %v", err)
-	}
-
-	if len(workerResp) > 0 {
-		return workerResp[0].Result.Data.JSON.TokensLast24Hours, nil
-	}
-
-	return 0, fmt.Errorf("no response received")
+// formatHourlyStats formats hourly statistics into a message string
+func formatHourlyStats(stats api.HourlyStats) string {
+	return fmt.Sprintf("시간별 통계 (%s ~ %s)\n\n"+
+		"RPM:\n"+
+		"  최소: %d\n"+
+		"  최대: %d\n"+
+		"  평균: %.0f\n"+
+		"  현재: %d\n\n"+
+		"인스턴스 수:\n"+
+		"  최소: %d\n"+
+		"  최대: %d\n"+
+		"  평균: %.0f\n"+
+		"  현재: %d\n\n"+
+		"생성량:\n"+
+		"  전체: %d\n"+
+		"  사용자: %d\n"+
+		"  비율: %.2f%%",
+		stats.StartTime.Format("15:04:05"),
+		stats.EndTime.Format("15:04:05"),
+		stats.RPM.Min,
+		stats.RPM.Max,
+		stats.RPM.Avg,
+		stats.RPM.Current,
+		stats.TotalInstances.Min,
+		stats.TotalInstances.Max,
+		stats.TotalInstances.Avg,
+		stats.TotalInstances.Current,
+		stats.GenerationLastHour.General,
+		stats.GenerationLastHour.User,
+		stats.GenerationLastHour.Ratio)
 }
 
-func getUserMetrics(token string, userId string) (*UserMetricsResponse, error) {
-	// URL 생성
-	url := fmt.Sprintf("https://relay.inference.supply/api/trpc/metrics.user?batch=1&input={\"0\":{\"json\":{\"userId\":\"%s\"}}}", userId)
-
-	// HTTP GET 요청 준비
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %v", err)
+// formatReport formats the report message
+func formatReport(metrics *api.MinuteMetrics) string {
+	efficiency := 0.0
+	if metrics.User.Share > 0 {
+		efficiency = metrics.User.TotalDailyCost / (metrics.User.Share * 100)
 	}
 
-	// 헤더 설정
-	req.Header.Set("Authorization", "Bearer "+token)
+	message := fmt.Sprintf("포인트 : %d\n비중 : %.2f%%\n비용 : $%.2f\n효율(1%%) : $%d",
+		metrics.User.TokensLast24Hours,
+		metrics.User.Share*100,
+		metrics.User.TotalDailyCost,
+		int(efficiency))
 
-	// 요청 보내기
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("error making request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// 응답 읽기
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response: %v", err)
+	if metrics.User.VastaiCredit != nil {
+		message += fmt.Sprintf("\n잔액 : $%.2f", metrics.User.VastaiCredit.Credit)
 	}
 
-	// 응답 파싱
-	var metricsResp []UserMetricsResponse
-	err = json.Unmarshal(body, &metricsResp)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing response: %v", err)
-	}
-
-	if len(metricsResp) > 0 {
-		return &metricsResp[0], nil
-	}
-
-	return nil, fmt.Errorf("no response received")
+	return message
 }
 
-func getActiveWorkers(token string) ([]Worker, error) {
-	// URL 생성
-	url := "https://relay.inference.supply/api/trpc/worker.list?batch=1&input={\"0\":{\"json\":null,\"meta\":{\"values\":[\"undefined\"]}}}"
-
-	// HTTP GET 요청 준비
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %v", err)
+// handleTelegramCommand processes telegram bot commands
+func handleTelegramCommand(update telegram.Update, telegramClient *telegram.Client, cfg *config.Config) error {
+	metrics := getCurrentMetrics()
+	if metrics == nil {
+		response := "No metrics available. \n Please wait a moment."
+		return telegramClient.SendMessage(update.Message.MessageThreadID, response)
 	}
 
-	// 헤더 설정
-	req.Header.Set("Authorization", "Bearer "+token)
+	command := strings.TrimSpace(update.Message.Text)
+	var response string
 
-	// 요청 보내기
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("error making request: %v", err)
-	}
-	defer resp.Body.Close()
+	switch command {
+	case "/help":
+		response = "사용 가능한 명령어:\n\n" +
+			"`/help` - 이 도움말을 표시합니다\n" +
+			"`/balance` - Vast.ai 잔액을 표시합니다\n" +
+			"`/status` - 인스턴스 상태를 표시합니다\n" +
+			"`/report` - 상세 리포트를 표시합니다\n" +
+			"`/hourly` - 지난 1시간 동안의 통계를 표시합니다\n" +
+			"  • RPM 최소/최대/평균\n" +
+			"  • 인스턴스 수 최소/최대/평균\n" +
+			"  • 생성량 전체/사용자/비율"
 
-	// 응답 읽기
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response: %v", err)
-	}
-
-	// 응답 파싱
-	var workerResp []WorkerListResponse
-	err = json.Unmarshal(body, &workerResp)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing response: %v", err)
-	}
-
-	if len(workerResp) > 0 {
-		// isArchived가 false이고 실행 중인 인스턴스가 있는 워커만 필터링
-		var activeWorkers []Worker
-		for _, worker := range workerResp[0].Result.Data.JSON.Workers {
-			if !worker.IsArchived && len(worker.Instances) > 0 {
-				// 실행 중인 인스턴스가 하나라도 있는지 확인
-				hasRunningInstance := false
-				for _, instance := range worker.Instances {
-					if instance.Status == "Running" {
-						hasRunningInstance = true
-						break
-					}
-				}
-				if hasRunningInstance {
-					activeWorkers = append(activeWorkers, worker)
-				}
-			}
+	case "/balance":
+		if metrics.User.VastaiCredit != nil {
+			response = fmt.Sprintf("Balance : `$%.2f`", metrics.User.VastaiCredit.Credit)
+		} else {
+			response = "Balance information not available"
 		}
-		return activeWorkers, nil
+
+	case "/status":
+		response = fmt.Sprintf("Vast.Ai  : %d\nActual Instances : %d",
+			metrics.User.TotalInstances,
+			metrics.User.ActualTotalInstances)
+
+	case "/report":
+		response = formatReport(metrics)
+
+	case "/hourly":
+		stats := api.GlobalHourlyStats.GetStats()
+		response = formatHourlyStats(stats)
+
+	default:
+		return nil
 	}
 
-	return nil, fmt.Errorf("no response received")
+	return telegramClient.SendMessage(update.Message.MessageThreadID, response)
 }
 
-func getWorkerMetrics(token string, workerId string) (*WorkerMetricsResponse, error) {
-	// URL 생성
-	url := fmt.Sprintf("https://relay.inference.supply/api/trpc/metrics.worker?batch=1&input={\"0\":{\"json\":{\"workerId\":\"%s\"}}}", workerId)
+// startTelegramBot starts the telegram bot and listens for updates
+func startTelegramBot(telegramClient *telegram.Client, cfg *config.Config) {
+	offset := 0
+	for {
+		updates, err := telegramClient.GetUpdates(offset)
+		if err != nil {
+			log.Printf("Error getting updates: %v", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
 
-	// HTTP GET 요청 준비
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %v", err)
+		for _, update := range updates {
+			if err := handleTelegramCommand(update, telegramClient, cfg); err != nil {
+				log.Printf("Error handling command: %v", err)
+			}
+			offset = update.UpdateID + 1
+		}
+
+		time.Sleep(1 * time.Second)
 	}
-
-	// 헤더 설정
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// 요청 보내기
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("error making request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// 응답 읽기
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response: %v", err)
-	}
-
-	// 응답 파싱
-	var metricsResp []WorkerMetricsResponse
-	err = json.Unmarshal(body, &metricsResp)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing response: %v", err)
-	}
-
-	if len(metricsResp) > 0 {
-		return &metricsResp[0], nil
-	}
-
-	return nil, fmt.Errorf("no response received")
 }
 
-func loadConfig(filename string) (*Config, error) {
-	configFile, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("error reading config file: %w", err)
-	}
+// startHourlyReporter starts the automatic hourly report sender
+func startHourlyReporter(telegramClient *telegram.Client, cfg *config.Config) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
 
-	var config Config
-	if err := yaml.Unmarshal(configFile, &config); err != nil {
-		return nil, fmt.Errorf("error parsing config: %w", err)
-	}
+	for {
+		stats := api.GlobalHourlyStats.GetStats()
+		message := formatHourlyStats(stats)
 
-	return &config, nil
-}
+		if err := telegramClient.SendMessage(cfg.Telegram.Threads.Hourly, message); err != nil {
+			log.Printf("Error sending hourly report: %v", err)
+		}
 
-func printWorkerInfo(worker Worker, metrics *WorkerMetricsResponse) {
-	fmt.Printf("\nWorker: %s\n", worker.Name)
-	fmt.Printf("  ID: %s\n", worker.ID)
-	fmt.Printf("  Metrics:\n")
-	fmt.Printf("    Generations Last 24h: %d\n", metrics.Result.Data.JSON.GenerationsLast24Hours)
-	fmt.Printf("    Tokens Last 24h: %d\n", metrics.Result.Data.JSON.TokensLast24Hours)
-	fmt.Printf("    Tokens All Time: %d\n", metrics.Result.Data.JSON.TokensAllTime)
-	fmt.Printf("  Instances:\n")
-
-	for _, instance := range worker.Instances {
-
-		fmt.Printf("    - %s (%s)\n", instance.Name, instance.Status)
-		fmt.Printf("      Runtime: %s\n", instance.Info.Runtime)
-		fmt.Printf("      Location: %s, %s (%s)\n",
-			instance.Info.City,
-			instance.Info.Country,
-			instance.Info.IPAddress)
-
+		<-ticker.C
 	}
 }
 
 func main() {
-	config, err := loadConfig("config.yaml")
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: .env file not found: %v", err)
+	}
+
+	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		return
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// 로거 함수 정의
-	logger := func(message string) {
-		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		fmt.Printf("[%s] %s\n", timestamp, message)
+	client := api.NewClient()
+	telegramClient := telegram.NewClient(cfg.Telegram.Token, cfg.Telegram.ChatID)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start telegram bot
+	go startTelegramBot(telegramClient, cfg)
+
+	// Start hourly reporter
+	go startHourlyReporter(telegramClient, cfg)
+
+	for _, account := range cfg.Accounts {
+		fmt.Printf("\nStarting metrics collection for account: %s\n", account.Name)
+
+		token, userID, err := client.Login(account.Kuzco.Email, account.Kuzco.Password)
+		if err != nil {
+			log.Printf("Login failed for %s: %v", account.Name, err)
+			continue
+		}
+
+		client.SetToken(token)
+
+		dailyChan := make(chan api.DailyMetrics, 1)
+		minuteChan := make(chan api.MinuteMetrics, 1)
+		stopChan := make(chan struct{})
+
+		var vastaiToken string
+		if account.Vastai.Enabled {
+			vastaiToken = account.Vastai.Token
+		}
+
+		sendAlert := func(message, alertType string) error {
+			var threadID int
+			switch alertType {
+			case "daily":
+				threadID = cfg.Telegram.Threads.Daily
+			case "hourly":
+				threadID = cfg.Telegram.Threads.Hourly
+			case "error":
+				threadID = cfg.Telegram.Threads.Error
+			case "status":
+				threadID = cfg.Telegram.Threads.Status
+			}
+			return telegramClient.SendMessage(threadID, message)
+		}
+
+		go client.CollectMetrics(
+			userID,
+			vastaiToken,
+			account.Vastai.IncludeVastaiCost,
+			account.Alerts,
+			sendAlert,
+			dailyChan,
+			minuteChan,
+			stopChan,
+		)
+
+		go func(email string) {
+			for {
+				select {
+				case <-dailyChan:
+					fmt.Printf("\nDaily Metrics for %s:\n", email)
+				case mm := <-minuteChan:
+					fmt.Printf("\nMinute Metrics for %s:\n", email)
+					updateCurrentMetrics(mm)
+				}
+			}
+		}(account.Name)
 	}
 
-	// 로거 함수를 NewMonitor에 전달
-	monitor := NewMonitor(config, logger)
-	monitor.Start()
-
-	// 프로그램이 종료되지 않도록 대기
-	select {}
+	<-sigChan
+	fmt.Println("\nShutting down...")
 }

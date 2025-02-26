@@ -6,4 +6,7 @@ Dockerfile
 .env
 *.exe
 *.test
-*.out 
+*.out
+test/
+*_test.go
+config.yaml.backup 

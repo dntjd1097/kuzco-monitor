@@ -27,12 +27,12 @@ WORKDIR /app
 # Copy the binary from builder
 COPY --from=builder /app/kuzco-monitor .
 
-# Create config directory
-RUN mkdir -p /app/config
+# Create config directory and set permissions
+RUN mkdir -p /app/config && \
+    adduser -D -g '' appuser && \
+    chown -R appuser:appuser /app
 
 # Run as non-root user
-RUN adduser -D -g '' appuser
-RUN chown -R appuser:appuser /app
 USER appuser
 
 # Command to run

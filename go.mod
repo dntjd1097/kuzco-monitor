@@ -1,5 +1,8 @@
-module github.com/dntjd1097/kuzco-monitor
+module test
 
-go 1.23.5
+go 1.22.0
 
-require gopkg.in/yaml.v2 v2.4.0
+require (
+	github.com/joho/godotenv v1.5.1
+	gopkg.in/yaml.v3 v3.0.1
+)
