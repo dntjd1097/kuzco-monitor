@@ -27,10 +27,11 @@ type AlertConfig struct {
 }
 
 type TelegramThreads struct {
-	Daily  int `yaml:"daily"`
-	Hourly int `yaml:"hourly"`
-	Error  int `yaml:"error"`
-	Status int `yaml:"status"`
+	Daily   int `yaml:"daily"`
+	Hourly  int `yaml:"hourly"`
+	Error   int `yaml:"error"`
+	Status  int `yaml:"status"`
+	Workers int `yaml:"workers"`
 }
 
 type TelegramConfig struct {

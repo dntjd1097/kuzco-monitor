@@ -372,21 +372,38 @@ func startTelegramBot(telegramClient *telegram.Client, cfg *config.Config) {
 // startHourlyReporter starts the automatic hourly report sender
 func startHourlyReporter(telegramClient *telegram.Client, cfg *config.Config) {
 	log.Printf("Starting hourly reporter...")
-	ticker := time.NewTicker(time.Hour)
+
+	// 개발 모드 체크
+	isDev := os.Getenv("ENV") == "dev"
+
+	// 타이머 간격 설정
+	var reportInterval time.Duration
+
+	if isDev {
+		// 개발 모드에서는 2분 간격으로 보고서 전송
+		reportInterval = 2 * time.Minute
+		log.Printf("개발 모드: 시간별 보고서 %s 간격으로 전송", reportInterval)
+	} else {
+		// 프로덕션 모드에서는 1시간 간격으로 전송
+		reportInterval = time.Hour
+		log.Printf("프로덕션 모드: 시간별 보고서 1시간 간격으로 전송")
+	}
+
+	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
 	for {
-		log.Printf("Waiting for next hour to send report...")
+		log.Printf("다음 시간별 보고서 대기 중...")
 		<-ticker.C
-		log.Printf("Getting hourly stats...")
+		log.Printf("시간별 통계 조회 중...")
 		stats := api.GlobalHourlyStats.GetStats()
 		message := formatHourlyStats(stats)
 
-		log.Printf("Sending hourly report to thread %d...", cfg.Telegram.Threads.Hourly)
+		log.Printf("시간별 보고서 스레드 %d로 전송 중...", cfg.Telegram.Threads.Hourly)
 		if err := telegramClient.SendMessage(cfg.Telegram.Threads.Hourly, message); err != nil {
-			log.Printf("[ERROR] Failed to send hourly report: %v", err)
+			log.Printf("[ERROR] 시간별 보고서 전송 실패: %v", err)
 		} else {
-			log.Printf("Successfully sent hourly report")
+			log.Printf("시간별 보고서 전송 완료")
 		}
 	}
 }
@@ -439,10 +456,12 @@ func startInstanceMonitoring(vastaiClient *api.VastaiClient, sendAlert func(stri
 func formatWorkerStats(metrics *api.MinuteMetrics) string {
 	// 워커 정보를 저장할 슬라이스
 	type WorkerInfo struct {
-		Name              string
-		ModelType         string
-		GPU               string
-		TokensPerInstance int64
+		Name               string
+		ModelType          string
+		GPU                string
+		TokensPerInstance  int64
+		GenerationsLast24H int
+		GenerationLastHour int
 	}
 
 	workers := make([]WorkerInfo, 0, len(metrics.User.Workers))
@@ -450,8 +469,10 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 	// 워커 정보 수집
 	for _, worker := range metrics.User.Workers {
 		info := WorkerInfo{
-			Name:              worker.Name,
-			TokensPerInstance: worker.TokensPerInstance,
+			Name:               worker.Name,
+			TokensPerInstance:  worker.TokensPerInstance,
+			GenerationsLast24H: worker.GenerationsLast24H,
+			GenerationLastHour: worker.GenerationLastHour,
 		}
 
 		// 인스턴스 정보가 있는 경우 모델 및 GPU 정보 추가
@@ -473,9 +494,16 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 
 	// 총 워커 수와 전체 생성량 계산
 	totalWorkers := len(workers)
+	totalGenerations := 0
+	totalGenerationsLast24H := 0
+	for _, w := range workers {
+		totalGenerations += w.GenerationLastHour
+		totalGenerationsLast24H += w.GenerationsLast24H
+	}
 
 	// 헤더 메시지 생성
 	header := fmt.Sprintf("🖥️ 워커 현황 (총 %d개)\n", totalWorkers)
+	header += fmt.Sprintf("📊 총 생성량: %d/시간 | 24시간: %d\n", totalGenerations, totalGenerationsLast24H)
 
 	// 총 페이지 수 계산
 	totalPages := (totalWorkers + 9) / 10 // 올림 계산
@@ -499,7 +527,26 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 		// 페이지 번호 표시 추가
 		messageBuilder.WriteString(fmt.Sprintf("✨ 워커 정보 (%d~%d) - %d/%d 페이지:\n\n", i+1, end, pageNum, totalPages))
 
+		// 이 페이지의 워커들 생성량 합계
+		pageSum := 0
+		pageSumLast24H := 0
+		for j := i; j < end; j++ {
+			pageSum += workers[j].GenerationLastHour
+			pageSumLast24H += workers[j].GenerationsLast24H
+		}
+
 		// 이 그룹이 전체에서 차지하는 비율
+		hourRatio := 0.0
+		day24Ratio := 0.0
+		if totalGenerations > 0 {
+			hourRatio = float64(pageSum) / float64(totalGenerations) * 100
+		}
+		if totalGenerationsLast24H > 0 {
+			day24Ratio = float64(pageSumLast24H) / float64(totalGenerationsLast24H) * 100
+		}
+
+		messageBuilder.WriteString(fmt.Sprintf("📈 그룹 생성량: %d/시간 (%.1f%%) | 24시간: %d (%.1f%%)\n\n",
+			pageSum, hourRatio, pageSumLast24H, day24Ratio))
 
 		for j := i; j < end; j++ {
 			w := workers[j]
@@ -526,11 +573,23 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 			messageBuilder.WriteString(fmt.Sprintf("%d. %s\n", j+1, w.Name))
 			messageBuilder.WriteString(fmt.Sprintf("   %s 모델: %s | %s GPU: %s\n", modelIcon, w.ModelType, gpuIcon, w.GPU))
 
-			// 토큰당 수익과 생성량 함께 표시
 			// 토큰당 수익 포맷팅 - 큰 숫자 읽기 쉽게 표시
 			tokensFormatted := formatNumber(float64(w.TokensPerInstance))
 			messageBuilder.WriteString(fmt.Sprintf("   💎 토큰당 수익: %s\n", tokensFormatted))
 
+			// 생성량 비율 계산
+			hourWorkerRatio := 0.0
+			day24WorkerRatio := 0.0
+			if totalGenerations > 0 {
+				hourWorkerRatio = float64(w.GenerationLastHour) / float64(totalGenerations) * 100
+			}
+			if totalGenerationsLast24H > 0 {
+				day24WorkerRatio = float64(w.GenerationsLast24H) / float64(totalGenerationsLast24H) * 100
+			}
+
+			// 생성량 정보 추가
+			messageBuilder.WriteString(fmt.Sprintf("   💫 생성량: %d/시간 (%.1f%%) | 24시간: %d (%.1f%%)\n\n",
+				w.GenerationLastHour, hourWorkerRatio, w.GenerationsLast24H, day24WorkerRatio))
 		}
 
 		messages = append(messages, messageBuilder.String())
@@ -556,6 +615,109 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 
 	// 첫 페이지 내용과, 추가 페이지 정보를 반환
 	return messages[0] + fmt.Sprintf("\n\n$$$%s", string(jsonData))
+}
+
+// startDailyWorkerReporter는 매일 워커 현황을 전송합니다
+func startDailyWorkerReporter(telegramClient *telegram.Client, cfg *config.Config) {
+	log.Printf("Starting daily worker reporter...")
+
+	// 개발 모드 체크
+	isDev := os.Getenv("ENV") == "dev"
+
+	// 타이머 간격 설정
+	var initialDelay time.Duration
+
+	if isDev {
+		// 개발 모드에서는 20초 후에 첫 보고서 전송, 그 후 1분 간격으로 전송
+		initialDelay = 20 * time.Second
+		log.Printf("개발 모드: %s 후 첫 워커 보고서 전송, 이후 1분 간격으로 전송", initialDelay)
+	} else {
+		// 프로덕션 모드에서는 매일 오전 9시에 전송
+		now := time.Now()
+		nextReport := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+		if now.After(nextReport) {
+			nextReport = nextReport.Add(24 * time.Hour)
+		}
+		initialDelay = nextReport.Sub(now)
+		log.Printf("다음 워커 보고서 예정 시간: %s", nextReport.Format("2006-01-02 15:04:05"))
+	}
+
+	timer := time.NewTimer(initialDelay)
+	defer timer.Stop()
+
+	for {
+		<-timer.C
+		log.Printf("워커 보고서 생성 중...")
+
+		// 현재 메트릭스 가져오기
+		metrics := getCurrentMetrics()
+		if metrics == nil {
+			log.Printf("[ERROR] 워커 보고서용 메트릭스가 없습니다")
+			// 메트릭스가 없는 경우 1시간 후 다시 시도 (개발 모드에서는 30초 후)
+			if isDev {
+				log.Printf("개발 모드: 30초 후 다시 시도")
+				timer.Reset(30 * time.Second)
+			} else {
+				timer.Reset(time.Hour)
+			}
+			continue
+		}
+
+		// 워커 보고서 생성
+		workerReport := formatWorkerStats(metrics)
+
+		// 추가 페이지 처리
+		if strings.Contains(workerReport, "$$$") {
+			parts := strings.Split(workerReport, "$$$")
+			firstPage := parts[0]
+
+			// 첫 번째 페이지 전송
+			if err := telegramClient.SendMessage(cfg.Telegram.Threads.Workers, firstPage); err != nil {
+				log.Printf("[ERROR] 워커 보고서(첫 페이지) 전송 실패: %v", err)
+			} else {
+				log.Printf("워커 보고서(첫 페이지) 전송 완료")
+			}
+
+			// 추가 페이지 처리
+			if len(parts) > 1 {
+				var workerPages struct {
+					Pages []string `json:"pages"`
+				}
+
+				if err := json.Unmarshal([]byte(parts[1]), &workerPages); err != nil {
+					log.Printf("워커 페이지 파싱 오류: %v", err)
+				} else {
+					// 각 추가 페이지를 순차적으로 전송 (0.5초 딜레이)
+					for i, page := range workerPages.Pages {
+						time.Sleep(500 * time.Millisecond) // 0.5초 딜레이로 순서 보장
+						if err := telegramClient.SendMessage(cfg.Telegram.Threads.Workers, page); err != nil {
+							log.Printf("워커 페이지 %d 전송 오류: %v", i+2, err)
+						} else {
+							log.Printf("워커 보고서(페이지 %d) 전송 완료", i+2)
+						}
+					}
+				}
+			}
+		} else {
+			// 단일 페이지 전송
+			if err := telegramClient.SendMessage(cfg.Telegram.Threads.Workers, workerReport); err != nil {
+				log.Printf("[ERROR] 워커 보고서 전송 실패: %v", err)
+			} else {
+				log.Printf("워커 보고서 전송 완료")
+			}
+		}
+
+		// 다음 전송 시간 설정
+		if isDev {
+			// 개발 모드에서는 1분 후 다시 전송
+			timer.Reset(1 * time.Minute)
+			log.Printf("개발 모드: 다음 워커 보고서 %s 후 전송", 1*time.Minute)
+		} else {
+			// 프로덕션 모드에서는 다음 날 같은 시간
+			timer.Reset(24 * time.Hour)
+			log.Printf("다음 워커 보고서 예정 시간: %s", time.Now().Add(24*time.Hour).Format("2006-01-02 15:04:05"))
+		}
+	}
 }
 
 func main() {
@@ -592,6 +754,9 @@ func main() {
 
 	// Start hourly reporter
 	go startHourlyReporter(telegramClient, cfg)
+
+	// Start daily worker reporter
+	go startDailyWorkerReporter(telegramClient, cfg)
 
 	for _, account := range cfg.Accounts {
 		fmt.Printf("Starting metrics collection for account: %s\n", account.Name)
