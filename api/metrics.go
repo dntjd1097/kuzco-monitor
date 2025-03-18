@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+var (
+	tokenUnit = 10000.0
+)
+
 // HourlyStats는 시간별 통계를 저장하는 구조체입니다
 type HourlyStats struct {
 	RPM struct {
@@ -389,8 +393,8 @@ func (m *Client) collectDailyMetrics(userID string, vastaiToken string, includeV
 	dateStr := kst.Format("2006-01-02")
 
 	// 포인트 값 먼저 1000으로 나누기 (소수점 조정)
-	myPoints := float64(metrics.User.TokensLast24Hours) / 10000
-	totalPoints := float64(metrics.General.TokensLast24Hours) / 10000
+	myPoints := float64(metrics.User.TokensLast24Hours) / tokenUnit
+	totalPoints := float64(metrics.General.TokensLast24Hours) / tokenUnit
 
 	// 적절한 단위 결정 (K, M, B)
 	myPointsFormatted := formatNumber(myPoints)
@@ -514,7 +518,7 @@ func (m *Client) collectMinuteMetrics(userID string, vastaiToken string, include
 	// General metrics
 	mm.General.TotalInstances = metrics.General.RunningInstanceCount
 	mm.General.RPM = metrics.General.RPM
-	mm.General.TokensLast24Hours = metrics.General.TokensLast24Hours
+	mm.General.TokensLast24Hours = metrics.General.TokensLast24Hours / int64(tokenUnit)
 	mm.General.GenerationsLast24Hours = metrics.General.GenerationsLast24Hours
 	mm.General.CLIVersion = metrics.General.CLIVersion
 	if len(metrics.General.GenerationsHistory) > 0 {
@@ -522,8 +526,8 @@ func (m *Client) collectMinuteMetrics(userID string, vastaiToken string, include
 	}
 
 	// User metrics
-	mm.User.TokensLast24Hours = metrics.User.TokensLast24Hours
-	mm.User.TokensAllTime = metrics.User.TokensAllTime
+	mm.User.TokensLast24Hours = metrics.User.TokensLast24Hours / int64(tokenUnit)
+	mm.User.TokensAllTime = metrics.User.TokensAllTime / int64(tokenUnit)
 	mm.User.GenerationsLast24Hours = metrics.User.GenerationsLast24Hours
 	mm.User.ActualTotalInstances = metrics.User.TotalInstances // 기존 Kuzco의 totalInstances 저장
 
@@ -589,9 +593,9 @@ func (m *Client) collectMinuteMetrics(userID string, vastaiToken string, include
 			Name:               w.Name,
 			InstanceCount:      w.InstanceCount,
 			DailyCost:          w.DailyCost,
-			TokensPerInstance:  w.TokensPerInstance,
-			TokensLast24H:      w.TokensLast24H,
-			TotalTokens:        w.TotalTokens,
+			TokensPerInstance:  w.TokensPerInstance / int64(tokenUnit),
+			TokensLast24H:      w.TokensLast24H / int64(tokenUnit),
+			TotalTokens:        w.TotalTokens / int64(tokenUnit),
 			GenerationsLast24H: w.GenerationsLast24H,
 			Instances:          make([]InstanceMetrics, 0, len(w.Instances)),
 		}

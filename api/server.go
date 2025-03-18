@@ -30,7 +30,7 @@ func UpdateMetrics(metrics MinuteMetrics) {
 	globalMetricsLock.Lock()
 	defer globalMetricsLock.Unlock()
 	globalCurrentMetrics = &metrics
-	log.Printf("Global metrics updated in API server")
+	log.Printf("Global metrics updated in API server (개발 모드)")
 }
 
 // Start는 메트릭스 서버를 시작합니다
@@ -56,7 +56,7 @@ func (s *MetricsServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	<!DOCTYPE html>
 	<html>
 	<head>
-		<title>쿠즈코 모니터링 데이터</title>
+		<title>쿠즈코 모니터링 데이터 (개발 모드)</title>
 		<meta charset="UTF-8">
 		<style>
 			body {
@@ -68,6 +68,16 @@ func (s *MetricsServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 				color: #333;
 				border-bottom: 1px solid #ddd;
 				padding-bottom: 10px;
+			}
+			.dev-badge {
+				display: inline-block;
+				background-color: #ff6347;
+				color: white;
+				padding: 3px 8px;
+				border-radius: 4px;
+				font-size: 14px;
+				margin-left: 10px;
+				vertical-align: middle;
 			}
 			.section {
 				background-color: white;
@@ -121,9 +131,12 @@ func (s *MetricsServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 		</style>
 	</head>
 	<body>
-		<h1>쿠즈코 모니터링 데이터</h1>
+		<h1>쿠즈코 모니터링 데이터 <span class="dev-badge">개발 모드</span></h1>
 		
-		<button class="refresh-btn" onclick="fetchData('/api/metrics')">모든 데이터 조회</button>
+		<div class="section">
+			<p>이 페이지는 개발 모드에서만 사용 가능합니다. (ENV=dev)</p>
+			<button class="refresh-btn" onclick="fetchData('/api/metrics')">모든 데이터 조회</button>
+		</div>
 		
 		<div class="section">
 			<h2>데이터 미리보기</h2>

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -238,7 +240,8 @@ func handleTelegramCommand(update telegram.Update, telegramClient *telegram.Clie
 			"`/status` - 인스턴스 상태를 표시합니다\n" +
 			"`/report` - 상세 리포트를 표시합니다\n" +
 			"`/cost` - Vast.ai와 Kuzco의 일일 비용과 잔액을 표시합니다\n" +
-			"`/hourly` - 지난 1시간 동안의 통계를 표시합니다"
+			"`/hourly` - 지난 1시간 동안의 통계를 표시합니다\n" +
+			"`/workers` - 워커별 시간당 생성량을 표시합니다"
 
 	case "/balance":
 		log.Printf("Checking balance")
@@ -290,6 +293,46 @@ func handleTelegramCommand(update telegram.Update, telegramClient *telegram.Clie
 		stats := api.GlobalHourlyStats.GetStats()
 		response = formatHourlyStats(stats)
 		log.Printf("Hourly stats generated")
+
+	case "/workers":
+		log.Printf("Getting worker stats")
+		response = formatWorkerStats(metrics)
+
+		// 추가 페이지가 있는지 확인
+		if strings.Contains(response, "$$$") {
+			parts := strings.Split(response, "$$$")
+			response = parts[0] // 첫 번째 페이지 내용
+
+			// 첫 번째 페이지 전송
+			if err := telegramClient.SendMessage(update.Message.MessageThreadID, response); err != nil {
+				log.Printf("Error sending first worker page: %v", err)
+				return err
+			}
+
+			// 추가 페이지가 있으면 JSON에서 파싱
+			if len(parts) > 1 {
+				var workerPages struct {
+					Pages []string `json:"pages"`
+				}
+
+				if err := json.Unmarshal([]byte(parts[1]), &workerPages); err != nil {
+					log.Printf("Error parsing worker pages: %v", err)
+				} else {
+					// 각 추가 페이지를 순차적으로 전송 (0.5초 딜레이)
+					for i, page := range workerPages.Pages {
+						time.Sleep(500 * time.Millisecond) // 0.5초 딜레이로 순서 보장
+						if err := telegramClient.SendMessage(update.Message.MessageThreadID, page); err != nil {
+							log.Printf("Error sending worker page %d: %v", i+2, err)
+						}
+					}
+				}
+			}
+
+			// 이미 메시지를 보냈으므로 빈 문자열로 설정
+			response = ""
+		}
+
+		log.Printf("Worker stats generated")
 
 	default:
 		log.Printf("Unknown command: %s", command)
@@ -390,6 +433,129 @@ func startInstanceMonitoring(vastaiClient *api.VastaiClient, sendAlert func(stri
 		log.Printf("=== End of Monitoring Cycle #%d ===\n", monitoringCount)
 		<-ticker.C
 	}
+}
+
+// formatWorkerStats 함수는 워커별 토큰당 수익을 포맷합니다
+func formatWorkerStats(metrics *api.MinuteMetrics) string {
+	// 워커 정보를 저장할 슬라이스
+	type WorkerInfo struct {
+		Name              string
+		ModelType         string
+		GPU               string
+		TokensPerInstance int64
+	}
+
+	workers := make([]WorkerInfo, 0, len(metrics.User.Workers))
+
+	// 워커 정보 수집
+	for _, worker := range metrics.User.Workers {
+		info := WorkerInfo{
+			Name:              worker.Name,
+			TokensPerInstance: worker.TokensPerInstance,
+		}
+
+		// 인스턴스 정보가 있는 경우 모델 및 GPU 정보 추가
+		if len(worker.Instances) > 0 {
+			info.ModelType = worker.Instances[0].Model
+			info.GPU = worker.Instances[0].GPUModel
+		}
+
+		workers = append(workers, info)
+	}
+
+	// 토큰당 수익 기준으로 내림차순 정렬
+	sort.Slice(workers, func(i, j int) bool {
+		return workers[i].TokensPerInstance > workers[j].TokensPerInstance
+	})
+
+	// 결과 메시지 생성
+	var messages []string
+
+	// 총 워커 수와 전체 생성량 계산
+	totalWorkers := len(workers)
+
+	// 헤더 메시지 생성
+	header := fmt.Sprintf("🖥️ 워커 현황 (총 %d개)\n", totalWorkers)
+
+	// 총 페이지 수 계산
+	totalPages := (totalWorkers + 9) / 10 // 올림 계산
+
+	// 10개씩 묶어서 메시지 생성
+	for i := 0; i < totalWorkers; i += 10 {
+		var messageBuilder strings.Builder
+		pageNum := (i / 10) + 1
+
+		end := i + 10
+		if end > totalWorkers {
+			end = totalWorkers
+		}
+
+		// 헤더는 첫 페이지에만 추가
+		if i == 0 {
+			messageBuilder.WriteString(header)
+			messageBuilder.WriteString("\n")
+		}
+
+		// 페이지 번호 표시 추가
+		messageBuilder.WriteString(fmt.Sprintf("✨ 워커 정보 (%d~%d) - %d/%d 페이지:\n\n", i+1, end, pageNum, totalPages))
+
+		// 이 그룹이 전체에서 차지하는 비율
+
+		for j := i; j < end; j++ {
+			w := workers[j]
+
+			// GPU 모델에 따라 아이콘 선택
+			gpuIcon := "🖥️"
+			if strings.Contains(strings.ToLower(w.GPU), "3090") {
+				gpuIcon = "🔥"
+			} else if strings.Contains(strings.ToLower(w.GPU), "4090") {
+				gpuIcon = "⚡"
+			} else if strings.Contains(strings.ToLower(w.GPU), "a100") {
+				gpuIcon = "🚀"
+			}
+
+			// 모델 타입에 따라 아이콘 선택
+			modelIcon := "📄"
+			if strings.Contains(strings.ToLower(w.ModelType), "vllm") {
+				modelIcon = "🚀"
+			} else if strings.Contains(strings.ToLower(w.ModelType), "ollama") {
+				modelIcon = "🐙"
+			}
+
+			// 워커 정보 포맷팅
+			messageBuilder.WriteString(fmt.Sprintf("%d. %s\n", j+1, w.Name))
+			messageBuilder.WriteString(fmt.Sprintf("   %s 모델: %s | %s GPU: %s\n", modelIcon, w.ModelType, gpuIcon, w.GPU))
+
+			// 토큰당 수익과 생성량 함께 표시
+			// 토큰당 수익 포맷팅 - 큰 숫자 읽기 쉽게 표시
+			tokensFormatted := formatNumber(float64(w.TokensPerInstance))
+			messageBuilder.WriteString(fmt.Sprintf("   💎 토큰당 수익: %s\n", tokensFormatted))
+
+		}
+
+		messages = append(messages, messageBuilder.String())
+	}
+
+	// 첫 번째 페이지만 바로 반환하고, 추가 페이지가 있으면 구조체로 전달
+	if len(messages) == 1 {
+		return messages[0]
+	}
+
+	// 구조체를 JSON으로 변환하여 pages 배열 형태로 전달
+	type WorkerPages struct {
+		Pages []string `json:"pages"`
+	}
+
+	jsonData, err := json.Marshal(WorkerPages{
+		Pages: messages[1:],
+	})
+
+	if err != nil {
+		return messages[0] + "\n\n(추가 페이지 오류)"
+	}
+
+	// 첫 페이지 내용과, 추가 페이지 정보를 반환
+	return messages[0] + fmt.Sprintf("\n\n$$$%s", string(jsonData))
 }
 
 func main() {
