@@ -28,6 +28,11 @@ func updateCurrentMetrics(mm api.MinuteMetrics) {
 	defer metricsLock.Unlock()
 	currentMetrics = &mm
 	log.Printf("Current metrics updated")
+
+	// 개발 모드일 때만 API 서버로 메트릭스 데이터 전달
+	if os.Getenv("ENV") == "dev" {
+		api.UpdateMetrics(mm)
+	}
 }
 
 // getCurrentMetrics safely retrieves the current metrics
@@ -77,16 +82,29 @@ func formatHourlyStats(stats api.HourlyStats) string {
 
 // formatReport formats the report message
 func formatReport(metrics *api.MinuteMetrics) string {
-	efficiency := 0.0
+	vastaiEfficiency := 0.0
+	kuzcoEfficiency := 0.0
 	if metrics.User.Share > 0 {
-		efficiency = metrics.User.TotalDailyCost / (metrics.User.Share * 100)
+		vastaiEfficiency = metrics.User.VastaiDailyCost / (metrics.User.Share * 100)
+		kuzcoEfficiency = metrics.User.KuzcoDailyCost / (metrics.User.Share * 100)
 	}
 
-	message := fmt.Sprintf("포인트 : %d\n비중 : %.2f%%\n비용 : $%.2f\n효율(1%%) : $%d",
-		metrics.User.TokensLast24Hours,
+	// 포인트 값 먼저 1000으로 나누기 (소수점 조정)
+	myPoints := float64(metrics.User.TokensLast24Hours) / 10000
+	totalPoints := float64(metrics.General.TokensLast24Hours) / 10000
+
+	// 적절한 단위 결정 (K, M, B)
+	myPointsFormatted := formatNumber(myPoints)
+	totalPointsFormatted := formatNumber(totalPoints)
+
+	message := fmt.Sprintf("포인트 : %s | %s\n비중 : %.1f%%\n비용(vast,kuzco) : $%.2f | $%.2f\n1%% 효율(vast,kuzco) : $%d | $%d",
+		myPointsFormatted,
+		totalPointsFormatted,
 		metrics.User.Share*100,
-		metrics.User.TotalDailyCost,
-		int(efficiency))
+		metrics.User.VastaiDailyCost,
+		metrics.User.KuzcoDailyCost,
+		int(vastaiEfficiency),
+		int(kuzcoEfficiency))
 
 	if metrics.User.VastaiCredit != nil {
 		message += fmt.Sprintf("\n잔액 : $%.2f", metrics.User.VastaiCredit.Credit)
@@ -95,19 +113,122 @@ func formatReport(metrics *api.MinuteMetrics) string {
 	return message
 }
 
+// formatNumber 함수 추가: 숫자를 K, M, B 단위로 자동 변환
+func formatNumber(num float64) string {
+	if num >= 1000000000 {
+		return fmt.Sprintf("%.1fB", num/1000000000)
+	} else if num >= 1000000 {
+		return fmt.Sprintf("%.1fM", num/1000000)
+	} else if num >= 1000 {
+		return fmt.Sprintf("%.1fK", num/1000)
+	}
+	return fmt.Sprintf("%.1f", num)
+}
+
 // handleTelegramCommand processes telegram bot commands
 func handleTelegramCommand(update telegram.Update, telegramClient *telegram.Client, cfg *config.Config) error {
+	command := strings.TrimSpace(update.Message.Text)
+	log.Printf("Processing command: %s", command)
+
+	// /report 명령어는 최신 데이터를 가져옵니다
+	if command == "/report" {
+		log.Printf("Generating fresh report")
+
+		// 계정 정보 가져오기 (첫 번째 계정 사용)
+		if len(cfg.Accounts) == 0 {
+			return telegramClient.SendMessage(update.Message.MessageThreadID, "계정 정보가 없습니다.")
+		}
+
+		account := cfg.Accounts[0]
+		client := api.NewClient()
+
+		// 로그인
+		token, userID, err := client.Login(account.Kuzco.Email, account.Kuzco.Password)
+		if err != nil {
+			log.Printf("Login failed: %v", err)
+			return telegramClient.SendMessage(update.Message.MessageThreadID, "로그인 실패: "+err.Error())
+		}
+
+		client.SetToken(token)
+
+		// 최신 메트릭스 수집
+		kuzcoClient := api.NewKuzcoClient(client)
+		metrics, err := kuzcoClient.GetAllMetrics(userID)
+		if err != nil {
+			log.Printf("Failed to get metrics: %v", err)
+			return telegramClient.SendMessage(update.Message.MessageThreadID, "메트릭스 수집 실패: "+err.Error())
+		}
+
+		// Vastai 정보 가져오기 (활성화된 경우)
+		var vastaiCredit *api.VastaiCredit
+		var vastaiCost float64
+
+		if account.Vastai.Enabled {
+			vastaiClient := api.NewVastaiClient(account.Vastai.Token)
+
+			// 크레딧 정보 가져오기
+			credit, err := vastaiClient.GetCredit()
+			if err != nil {
+				log.Printf("Failed to get vastai credit: %v", err)
+			} else {
+				vastaiCredit = credit
+			}
+
+			// 비용 정보 가져오기 (포함하도록 설정된 경우)
+			if account.Vastai.IncludeVastaiCost {
+				cost, err := vastaiClient.GetDailyCost()
+				if err != nil {
+					log.Printf("Failed to get vastai cost: %v", err)
+				} else {
+					vastaiCost = cost
+				}
+			}
+		}
+
+		// 효율성 계산
+		vastaiEfficiency := 0.0
+		kuzcoEfficiency := 0.0
+		if metrics.User.Share > 0 {
+			vastaiEfficiency = vastaiCost / (metrics.User.Share * 100)
+			kuzcoEfficiency = metrics.User.TotalDailyCost / (metrics.User.Share * 100)
+		}
+
+		// 포인트 값 먼저 1000으로 나누기 (소수점 조정)
+		myPoints := float64(metrics.User.TokensLast24Hours) / 10000
+		totalPoints := float64(metrics.General.TokensLast24Hours) / 10000
+
+		// 적절한 단위 결정 (K, M, B)
+		myPointsFormatted := formatNumber(myPoints)
+		totalPointsFormatted := formatNumber(totalPoints)
+
+		// 응답 메시지 생성
+		response := fmt.Sprintf("포인트 : %s | %s\n비중 : %.1f%%\n비용(vast,kuzco) : $%.2f | $%.2f\n1%% 효율(vast,kuzco) : $%d | $%d",
+			myPointsFormatted,
+			totalPointsFormatted,
+			metrics.User.Share*100,
+			vastaiCost,
+			metrics.User.TotalDailyCost,
+			int(vastaiEfficiency),
+			int(kuzcoEfficiency))
+
+		// Vastai 크레딧 정보 추가
+		if vastaiCredit != nil {
+			response += fmt.Sprintf("\n잔액 : $%.2f", vastaiCredit.Credit)
+		}
+
+		return telegramClient.SendMessage(update.Message.MessageThreadID, response)
+	}
+
+	// 다른 명령어는 캐시된 메트릭스 사용
 	metrics := getCurrentMetrics()
 	if metrics == nil {
-		log.Printf("[ERROR] No metrics available for command: %s", update.Message.Text)
+		log.Printf("[ERROR] No metrics available for command: %s", command)
 		response := "No metrics available. \nPlease wait a moment."
 		return telegramClient.SendMessage(update.Message.MessageThreadID, response)
 	}
 
-	command := strings.TrimSpace(update.Message.Text)
 	var response string
 
-	log.Printf("Processing command: %s", command)
 	switch command {
 	case "/help":
 		log.Printf("Generating help message")
@@ -137,11 +258,6 @@ func handleTelegramCommand(update telegram.Update, telegramClient *telegram.Clie
 		log.Printf("Status - Vast.Ai: %d, Actual Instances: %d",
 			metrics.User.TotalInstances,
 			metrics.User.ActualTotalInstances)
-
-	case "/report":
-		log.Printf("Generating report")
-		response = formatReport(metrics)
-		log.Printf("Report generated")
 
 	case "/cost":
 		log.Printf("Calculating costs")
@@ -295,6 +411,15 @@ func main() {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// 개발 모드일 때만 API 서버 시작
+	isDev := os.Getenv("ENV") == "dev"
+	if isDev {
+		// API 서버 시작 (포트 8080)
+		metricsServer := api.NewMetricsServer(8080)
+		go metricsServer.Start()
+		log.Printf("Metrics API server started on port 8080 (개발 모드)")
+	}
 
 	// Start telegram bot
 	go startTelegramBot(telegramClient, cfg)

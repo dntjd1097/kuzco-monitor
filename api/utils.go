@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	DiskCostPerDay = 0.01 * 24 // $0.01 per hour * 24 hours
+	DiskCostPerDay = 0.006 * 24 // $0.01 per hour * 24 hours
 )
 
 // Add this helper function to parse and compare versions

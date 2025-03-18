@@ -377,22 +377,35 @@ func (m *Client) collectDailyMetrics(userID string, vastaiToken string, includeV
 	}
 
 	// efficiency 계산
-	efficiency := metrics.User.Efficiency
+	vastaiEfficiency := 0.0
+	kuzcoEfficiency := 0.0
 	if metrics.User.Share > 0 {
-		efficiency = totalDailyCost / (metrics.User.Share * 100)
+		vastaiEfficiency = totalDailyCost / (metrics.User.Share * 100)
+		kuzcoEfficiency = metrics.User.TotalDailyCost / (metrics.User.Share * 100)
 	}
 
 	// 현재 KST 시간 가져오기
 	kst := time.Now().In(time.FixedZone("KST", 9*60*60))
 	dateStr := kst.Format("2006-01-02")
 
+	// 포인트 값 먼저 1000으로 나누기 (소수점 조정)
+	myPoints := float64(metrics.User.TokensLast24Hours) / 10000
+	totalPoints := float64(metrics.General.TokensLast24Hours) / 10000
+
+	// 적절한 단위 결정 (K, M, B)
+	myPointsFormatted := formatNumber(myPoints)
+	totalPointsFormatted := formatNumber(totalPoints)
+
 	// 텔레그램 메시지 작성
-	message := fmt.Sprintf("%s\n\n포인트 : %d\n비중 : %.2f%%\n비용 : $%.2f\n효율(1%%) : $%d",
+	message := fmt.Sprintf("%s\n\n포인트 : %s | %s\n비중 : %.1f%%\n비용(vast,kuzco) : $%.2f | $%.2f\n1%% 효율(vast,kuzco) : $%d | $%d",
 		dateStr,
-		metrics.User.TokensLast24Hours,
+		myPointsFormatted,
+		totalPointsFormatted,
 		metrics.User.Share*100,
-		totalDailyCost,
-		int(efficiency))
+		vastaiCost,
+		metrics.User.TotalDailyCost,
+		int(vastaiEfficiency),
+		int(kuzcoEfficiency))
 
 	// Vastai credit 정보가 있는 경우 추가
 	if vastaiCredit != nil {
@@ -406,7 +419,7 @@ func (m *Client) collectDailyMetrics(userID string, vastaiToken string, includeV
 
 	ch <- DailyMetrics{
 		Share:           metrics.User.Share,
-		Efficiency:      efficiency,
+		Efficiency:      metrics.User.Efficiency,
 		KuzcoTotalCost:  metrics.User.TotalDailyCost,
 		VastaiTotalCost: vastaiCost,
 		TotalDailyCost:  totalDailyCost,
@@ -749,4 +762,16 @@ func (m *Client) checkCredit(mm *MinuteMetrics, config AlertConfig, sendAlert fu
 	}
 
 	return nil
+}
+
+// formatNumber 숫자를 K, M, B 단위로 자동 변환
+func formatNumber(num float64) string {
+	if num >= 1000000000 {
+		return fmt.Sprintf("%.1fB", num/1000000000)
+	} else if num >= 1000000 {
+		return fmt.Sprintf("%.1fM", num/1000000)
+	} else if num >= 1000 {
+		return fmt.Sprintf("%.1fK", num/1000)
+	}
+	return fmt.Sprintf("%.1f", num)
 }

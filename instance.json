@@ -21,15 +21,15 @@
     },
     {
         "Gpu": "RTX 3060",
-        "Price": 0.083
+        "Price": 0.08
     },
     {
         "Gpu": "RTX 3060 Ti",
-        "Price": 0.087
+        "Price": 0.080
     },
     {
         "Gpu": "RTX 3070",
-        "Price": 0.096
+        "Price": 0.084
     },
     {
         "Gpu": "RTX 3080 Ti",
