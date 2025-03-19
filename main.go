@@ -118,13 +118,13 @@ func formatReport(metrics *api.MinuteMetrics) string {
 // formatNumber 함수 추가: 숫자를 K, M, B 단위로 자동 변환
 func formatNumber(num float64) string {
 	if num >= 1000000000 {
-		return fmt.Sprintf("%.1fB", num/1000000000)
+		return fmt.Sprintf("%.2fB", num/1000000000)
 	} else if num >= 1000000 {
-		return fmt.Sprintf("%.1fM", num/1000000)
+		return fmt.Sprintf("%.2fM", num/1000000)
 	} else if num >= 1000 {
-		return fmt.Sprintf("%.1fK", num/1000)
+		return fmt.Sprintf("%.2fK", num/1000)
 	}
-	return fmt.Sprintf("%.1f", num)
+	return fmt.Sprintf("%.2f", num)
 }
 
 // handleTelegramCommand processes telegram bot commands
@@ -649,6 +649,8 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 				modelIcon = "🚀"
 			} else if strings.Contains(strings.ToLower(w.ModelType), "ollama") {
 				modelIcon = "🐙"
+			} else if strings.Contains(strings.ToLower(w.ModelType), "sglang") {
+				modelIcon = "🤖"
 			}
 
 			// 워커 정보 포맷팅
