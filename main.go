@@ -378,22 +378,49 @@ func startHourlyReporter(telegramClient *telegram.Client, cfg *config.Config) {
 
 	// 타이머 간격 설정
 	var reportInterval time.Duration
+	var initialDelay time.Duration
 
 	if isDev {
 		// 개발 모드에서는 2분 간격으로 보고서 전송
 		reportInterval = 2 * time.Minute
-		log.Printf("개발 모드: 시간별 보고서 %s 간격으로 전송", reportInterval)
+		// 다음 짝수 분(0, 2, 4...)에 맞춰 시작
+		now := time.Now()
+		nextEvenMinute := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), ((now.Minute()/2)+1)*2, 0, 0, now.Location())
+		initialDelay = nextEvenMinute.Sub(now)
+		log.Printf("개발 모드: 첫 시간별 보고서 %s 후 전송, 이후 %s 간격으로 전송", initialDelay, reportInterval)
 	} else {
 		// 프로덕션 모드에서는 1시간 간격으로 전송
 		reportInterval = time.Hour
-		log.Printf("프로덕션 모드: 시간별 보고서 1시간 간격으로 전송")
+		// 다음 정시(00분)에 맞춰 시작
+		now := time.Now()
+		nextHour := time.Date(now.Year(), now.Month(), now.Day(), now.Hour()+1, 0, 0, 0, now.Location())
+		initialDelay = nextHour.Sub(now)
+		log.Printf("프로덕션 모드: 첫 시간별 보고서 %s 후 전송(정시), 이후 1시간 간격으로 전송", initialDelay)
 	}
 
+	// 초기 지연 후 첫 보고서 전송
+	time.Sleep(initialDelay)
+
+	// 첫 보고서 전송
+	log.Printf("시간별 통계 조회 중...")
+	stats := api.GlobalHourlyStats.GetStats()
+	message := formatHourlyStats(stats)
+
+	log.Printf("시간별 보고서 스레드 %d로 전송 중...", cfg.Telegram.Threads.Hourly)
+	if err := telegramClient.SendMessage(cfg.Telegram.Threads.Hourly, message); err != nil {
+		log.Printf("[ERROR] 시간별 보고서 전송 실패: %v", err)
+	} else {
+		log.Printf("시간별 보고서 전송 완료")
+	}
+
+	// 워커 보고서도 함께 전송
+	sendWorkerReport(telegramClient, cfg)
+
+	// 이후 정기적으로 보고서 전송
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
 	for {
-		log.Printf("다음 시간별 보고서 대기 중...")
 		<-ticker.C
 		log.Printf("시간별 통계 조회 중...")
 		stats := api.GlobalHourlyStats.GetStats()
@@ -405,6 +432,61 @@ func startHourlyReporter(telegramClient *telegram.Client, cfg *config.Config) {
 		} else {
 			log.Printf("시간별 보고서 전송 완료")
 		}
+
+		// 워커 보고서도 함께 전송
+		sendWorkerReport(telegramClient, cfg)
+	}
+}
+
+// sendWorkerReport 함수는 워커 보고서를 생성하고 전송합니다
+func sendWorkerReport(telegramClient *telegram.Client, cfg *config.Config) {
+	log.Printf("시간별 워커 보고서 생성 중...")
+	metrics := getCurrentMetrics()
+	if metrics != nil {
+		workerReport := formatWorkerStats(metrics)
+
+		// 추가 페이지 처리
+		if strings.Contains(workerReport, "$$$") {
+			parts := strings.Split(workerReport, "$$$")
+			firstPage := parts[0]
+
+			// 첫 번째 페이지 전송
+			if err := telegramClient.SendMessage(cfg.Telegram.Threads.Workers, firstPage); err != nil {
+				log.Printf("[ERROR] 시간별 워커 보고서(첫 페이지) 전송 실패: %v", err)
+			} else {
+				log.Printf("시간별 워커 보고서(첫 페이지) 전송 완료")
+			}
+
+			// 추가 페이지 처리
+			if len(parts) > 1 {
+				var workerPages struct {
+					Pages []string `json:"pages"`
+				}
+
+				if err := json.Unmarshal([]byte(parts[1]), &workerPages); err != nil {
+					log.Printf("워커 페이지 파싱 오류: %v", err)
+				} else {
+					// 각 추가 페이지를 순차적으로 전송 (0.5초 딜레이)
+					for i, page := range workerPages.Pages {
+						time.Sleep(500 * time.Millisecond) // 0.5초 딜레이로 순서 보장
+						if err := telegramClient.SendMessage(cfg.Telegram.Threads.Workers, page); err != nil {
+							log.Printf("워커 페이지 %d 전송 오류: %v", i+2, err)
+						} else {
+							log.Printf("시간별 워커 보고서(페이지 %d) 전송 완료", i+2)
+						}
+					}
+				}
+			}
+		} else {
+			// 단일 페이지 전송
+			if err := telegramClient.SendMessage(cfg.Telegram.Threads.Workers, workerReport); err != nil {
+				log.Printf("[ERROR] 시간별 워커 보고서 전송 실패: %v", err)
+			} else {
+				log.Printf("시간별 워커 보고서 전송 완료")
+			}
+		}
+	} else {
+		log.Printf("[ERROR] 시간별 워커 보고서용 메트릭스가 없습니다")
 	}
 }
 
@@ -784,6 +866,8 @@ func main() {
 				threadID = cfg.Telegram.Threads.Error
 			case "status":
 				threadID = cfg.Telegram.Threads.Status
+			case "worker":
+				threadID = cfg.Telegram.Threads.Workers
 			}
 			return telegramClient.SendMessage(threadID, message)
 		}
