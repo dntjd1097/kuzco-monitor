@@ -99,7 +99,7 @@ func formatReport(metrics *api.MinuteMetrics) string {
 	myPointsFormatted := formatNumber(myPoints)
 	totalPointsFormatted := formatNumber(totalPoints)
 
-	message := fmt.Sprintf("포인트 : %s | %s\n비중 : %.1f%%\n비용(vast,kuzco) : $%.2f | $%.2f\n1%% 효율(vast,kuzco) : $%d | $%d",
+	message := fmt.Sprintf("포인트 : %s | %s\n비중 : %.3f%%\n비용(vast,kuzco) : $%.2f | $%.2f\n1%% 효율(vast,kuzco) : $%d | $%d",
 		myPointsFormatted,
 		totalPointsFormatted,
 		metrics.User.Share*100,
@@ -204,7 +204,7 @@ func handleTelegramCommand(update telegram.Update, telegramClient *telegram.Clie
 		totalPointsFormatted := formatNumber(totalPoints)
 
 		// 응답 메시지 생성
-		response := fmt.Sprintf("포인트 : %s | %s\n비중 : %.1f%%\n비용(vast,kuzco) : $%.2f | $%.2f\n1%% 효율(vast,kuzco) : $%d | $%d",
+		response := fmt.Sprintf("포인트 : %s | %s\n비중 : %.3f%%\n비용(vast,kuzco) : $%.2f | $%.2f\n1%% 효율(vast,kuzco) : $%d | $%d",
 			myPointsFormatted,
 			totalPointsFormatted,
 			metrics.User.Share*100,
