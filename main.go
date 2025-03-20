@@ -539,11 +539,16 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 	// 워커 정보를 저장할 슬라이스
 	type WorkerInfo struct {
 		Name               string
-		ModelType          string
-		GPU                string
+		ModelType          []string // 모델 타입을
+		GPU                []string // GPU 유형들
+		Lane               []string // Lane 정보
 		TokensPerInstance  int64
 		GenerationsLast24H int
 		GenerationLastHour int
+		InstanceCount      int   // 인스턴스 개수 추가
+		AvgTokens          int64 // 인스턴스당 평균 토큰
+		AvgGenLastHour     int   // 인스턴스당 평균 시간당 생성량
+		AvgGenLast24H      int   // 인스턴스당 평균 24시간 생성량
 	}
 
 	// 유효한 워커(토큰당 수익이 0이 아닌) 정보를 저장할 슬라이스
@@ -556,17 +561,73 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 			continue
 		}
 
+		// 인스턴스 개수 확인
+		instanceCount := worker.InstanceCount
+		if instanceCount < 1 {
+			instanceCount = 1 // 0으로 나누기 방지
+		}
+
+		// 인스턴스당 평균값 계산
+		avgTokens := worker.TokensPerInstance
+		avgGenLastHour := worker.GenerationLastHour / instanceCount
+		avgGenLast24H := worker.GenerationsLast24H / instanceCount
+
+		// 각 인스턴스의 고유 모델, GPU, Lane 유형 수집
+		uniqueModels := make(map[string]bool)
+		uniqueGPUs := make(map[string]bool)
+		uniqueLanes := make(map[string]bool)
+
+		// 인스턴스별 정보 추출
+		for _, inst := range worker.Instances {
+			// 모델 정보 수집
+			if inst.Model != "" {
+				uniqueModels[inst.Model] = true
+			}
+
+			// GPU 정보 수집 및 정리
+			if inst.GPUModel != "" {
+				// GPU 모델명 정리 (예: RTX 3060)
+				gpuName := inst.GPUModel
+
+				uniqueGPUs[gpuName] = true
+			}
+
+			// Lane 정보 수집
+			if inst.Lane != "" {
+				uniqueLanes[inst.Lane] = true
+			}
+		}
+
+		// 유일한 모델 목록 생성
+		var modelList []string
+		for model := range uniqueModels {
+			modelList = append(modelList, model)
+		}
+
+		// 유일한 GPU 목록 생성
+		var gpuList []string
+		for gpu := range uniqueGPUs {
+			gpuList = append(gpuList, gpu)
+		}
+
+		// 유일한 Lane 목록 생성
+		var laneList []string
+		for lane := range uniqueLanes {
+			laneList = append(laneList, lane)
+		}
+
 		info := WorkerInfo{
 			Name:               worker.Name,
+			ModelType:          modelList,
+			GPU:                gpuList,
+			Lane:               laneList,
 			TokensPerInstance:  worker.TokensPerInstance,
 			GenerationsLast24H: worker.GenerationsLast24H,
 			GenerationLastHour: worker.GenerationLastHour,
-		}
-
-		// 인스턴스 정보가 있는 경우 모델 및 GPU 정보 추가
-		if len(worker.Instances) > 0 {
-			info.ModelType = worker.Instances[0].Model
-			info.GPU = worker.Instances[0].GPUModel
+			InstanceCount:      instanceCount,
+			AvgTokens:          avgTokens,
+			AvgGenLastHour:     avgGenLastHour,
+			AvgGenLast24H:      avgGenLast24H,
 		}
 
 		workers = append(workers, info)
@@ -577,9 +638,6 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 		return workers[i].TokensPerInstance > workers[j].TokensPerInstance
 	})
 
-	// 결과 메시지 생성
-	var messages []string
-
 	// 총 워커 수와 전체 생성량 계산
 	totalWorkers := len(workers)
 	if totalWorkers == 0 {
@@ -588,127 +646,106 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 
 	totalGenerations := 0
 	totalGenerationsLast24H := 0
+	totalInstances := 0
 	for _, w := range workers {
 		totalGenerations += w.GenerationLastHour
 		totalGenerationsLast24H += w.GenerationsLast24H
+		totalInstances += w.InstanceCount
 	}
+
+	// 전체 인스턴스당 평균 생성량 계산
+	var avgGenerationPerInstance, avgGeneration24HPerInstance int
+	if totalInstances > 0 {
+		avgGenerationPerInstance = totalGenerations / totalInstances
+		avgGeneration24HPerInstance = totalGenerationsLast24H / totalInstances
+	}
+
+	// 결과 메시지 생성
+	var messageBuilder strings.Builder
 
 	// 헤더 메시지 생성
-	header := fmt.Sprintf("🖥️ 워커 현황 (총 %d개, 토큰당 수익 > 0)\n", totalWorkers)
-	header += fmt.Sprintf("📊 총 생성량: %d/시간 | 24시간: %d\n", totalGenerations, totalGenerationsLast24H)
+	messageBuilder.WriteString(fmt.Sprintf("📊 워커 현황 요약 (%d개 워커/%d개 인스턴스)\n", totalWorkers, totalInstances))
+	messageBuilder.WriteString(fmt.Sprintf("• 총 생성량: %d/시간 | %d/24시간\n", totalGenerations, totalGenerationsLast24H))
+	messageBuilder.WriteString(fmt.Sprintf("• 인스턴스당 평균: %d/시간 | %d/24시간\n\n", avgGenerationPerInstance, avgGeneration24HPerInstance))
 
-	// 총 페이지 수 계산
-	totalPages := (totalWorkers + 9) / 10 // 올림 계산
+	// 헤더 구분선
+	messageBuilder.WriteString("-----------------------------------------------------------------------\n")
+	messageBuilder.WriteString("  R  | 워커 | I |  토큰/I    | 1hG/I | 모델 | GPU | Lane\n")
+	messageBuilder.WriteString("-----------------------------------------------------------------------\n")
 
-	// 10개씩 묶어서 메시지 생성
-	for i := 0; i < totalWorkers; i += 10 {
-		var messageBuilder strings.Builder
-		pageNum := (i / 10) + 1
-
-		end := i + 10
-		if end > totalWorkers {
-			end = totalWorkers
-		}
-
-		// 헤더는 첫 페이지에만 추가
-		if i == 0 {
-			messageBuilder.WriteString(header)
-			messageBuilder.WriteString("\n")
-		}
-
-		// 페이지 번호 표시 추가
-		messageBuilder.WriteString(fmt.Sprintf("✨ 워커 정보 (%d~%d) - %d/%d 페이지:\n\n", i+1, end, pageNum, totalPages))
-
-		// 이 페이지의 워커들 생성량 합계
-		pageSum := 0
-		pageSumLast24H := 0
-		for j := i; j < end; j++ {
-			pageSum += workers[j].GenerationLastHour
-			pageSumLast24H += workers[j].GenerationsLast24H
-		}
-
-		// 이 그룹이 전체에서 차지하는 비율
-		hourRatio := 0.0
-		day24Ratio := 0.0
-		if totalGenerations > 0 {
-			hourRatio = float64(pageSum) / float64(totalGenerations) * 100
-		}
-		if totalGenerationsLast24H > 0 {
-			day24Ratio = float64(pageSumLast24H) / float64(totalGenerationsLast24H) * 100
-		}
-
-		messageBuilder.WriteString(fmt.Sprintf("📈 그룹 생성량: %d/시간 (%.1f%%) | 24시간: %d (%.1f%%)\n\n",
-			pageSum, hourRatio, pageSumLast24H, day24Ratio))
-
-		for j := i; j < end; j++ {
-			w := workers[j]
-
-			// GPU 모델에 따라 아이콘 선택
-			gpuIcon := "🖥️"
-			if strings.Contains(strings.ToLower(w.GPU), "3090") {
-				gpuIcon = "🔥"
-			} else if strings.Contains(strings.ToLower(w.GPU), "4090") {
-				gpuIcon = "⚡"
-			} else if strings.Contains(strings.ToLower(w.GPU), "a100") {
-				gpuIcon = "🚀"
+	// 모든 워커 정보를 한꺼번에 표시
+	for i, w := range workers {
+		// 모델 타입에 따라 아이콘 선택
+		modelType := "일반"
+		if len(w.ModelType) > 0 {
+			// 모델 타입 단순화
+			simplifiedModels := make([]string, 0, len(w.ModelType))
+			for _, model := range w.ModelType {
+				simpleModel := "기타"
+				if strings.Contains(strings.ToLower(model), "vllm") {
+					simpleModel = "VL"
+				} else if strings.Contains(strings.ToLower(model), "ollama") {
+					simpleModel = "Ol"
+				} else if strings.Contains(strings.ToLower(model), "sglang") {
+					simpleModel = "SG"
+				}
+				simplifiedModels = append(simplifiedModels, simpleModel)
 			}
 
-			// 모델 타입에 따라 아이콘 선택
-			modelIcon := "📄"
-			if strings.Contains(strings.ToLower(w.ModelType), "vllm") {
-				modelIcon = "🚀"
-			} else if strings.Contains(strings.ToLower(w.ModelType), "ollama") {
-				modelIcon = "🐙"
-			} else if strings.Contains(strings.ToLower(w.ModelType), "sglang") {
-				modelIcon = "🤖"
+			// 중복 제거
+			uniqueModels := make(map[string]bool)
+			for _, m := range simplifiedModels {
+				uniqueModels[m] = true
 			}
 
-			// 워커 정보 포맷팅
-			messageBuilder.WriteString(fmt.Sprintf("%d. %s\n", j+1, w.Name))
-			messageBuilder.WriteString(fmt.Sprintf("   %s 모델: %s | %s GPU: %s\n", modelIcon, w.ModelType, gpuIcon, w.GPU))
-
-			// 토큰당 수익 포맷팅 - 큰 숫자 읽기 쉽게 표시
-			tokensFormatted := formatNumber(float64(w.TokensPerInstance))
-			messageBuilder.WriteString(fmt.Sprintf("   💎 토큰당 수익: %s\n", tokensFormatted))
-
-			// 생성량 비율 계산
-			hourWorkerRatio := 0.0
-			day24WorkerRatio := 0.0
-			if totalGenerations > 0 {
-				hourWorkerRatio = float64(w.GenerationLastHour) / float64(totalGenerations) * 100
-			}
-			if totalGenerationsLast24H > 0 {
-				day24WorkerRatio = float64(w.GenerationsLast24H) / float64(totalGenerationsLast24H) * 100
+			var modelsList []string
+			for m := range uniqueModels {
+				modelsList = append(modelsList, m)
 			}
 
-			// 생성량 정보 추가
-			messageBuilder.WriteString(fmt.Sprintf("   💫 생성량: %d/시간 (%.1f%%) | 24시간: %d (%.1f%%)\n\n",
-				w.GenerationLastHour, hourWorkerRatio, w.GenerationsLast24H, day24WorkerRatio))
+			modelType = strings.Join(modelsList, ",")
 		}
 
-		messages = append(messages, messageBuilder.String())
+		// GPU 목록 처리
+		gpuInfo := "N/A"
+		if len(w.GPU) > 0 {
+			gpuInfo = strings.Join(w.GPU, ",")
+		}
+
+		// Lane 정보 처리
+		laneInfo := "N/A"
+		if len(w.Lane) > 0 {
+			laneInfo = strings.Join(w.Lane, ",")
+		}
+
+		// 토큰당 수익 포맷팅
+		tokensFormatted := formatNumber(float64(w.TokensPerInstance))
+
+		// 1시간 생성량/인스턴스 사용
+		genPerInstance := w.AvgGenLastHour
+
+		// 워커 이름 추출 (v숫자만 남기기)
+		workerName := w.Name
+
+		// GPU 모델 추출 - 3060 등의 숫자만
+		// gpuModel := w.GPU
+
+		// 순위에 따라 들여쓰기 수준 조정
+		rankStr := fmt.Sprintf("%3d", i+1)
+
+		// 표시할 행 생성 (요청된 형식으로)
+		messageBuilder.WriteString(fmt.Sprintf(" %-4s | %-5s | %1d | %-11s | %5d | %-5s | %-8s | %s\n",
+			rankStr,
+			workerName,
+			w.InstanceCount,
+			tokensFormatted,
+			genPerInstance,
+			modelType,
+			gpuInfo,
+			laneInfo))
 	}
 
-	// 첫 번째 페이지만 바로 반환하고, 추가 페이지가 있으면 구조체로 전달
-	if len(messages) == 1 {
-		return messages[0]
-	}
-
-	// 구조체를 JSON으로 변환하여 pages 배열 형태로 전달
-	type WorkerPages struct {
-		Pages []string `json:"pages"`
-	}
-
-	jsonData, err := json.Marshal(WorkerPages{
-		Pages: messages[1:],
-	})
-
-	if err != nil {
-		return messages[0] + "\n\n(추가 페이지 오류)"
-	}
-
-	// 첫 페이지 내용과, 추가 페이지 정보를 반환
-	return messages[0] + fmt.Sprintf("\n\n$$$%s", string(jsonData))
+	return messageBuilder.String()
 }
 
 // startDailyWorkerReporter는 매일 워커 현황을 전송합니다
