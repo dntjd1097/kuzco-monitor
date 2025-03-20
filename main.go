@@ -546,10 +546,16 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 		GenerationLastHour int
 	}
 
+	// 유효한 워커(토큰당 수익이 0이 아닌) 정보를 저장할 슬라이스
 	workers := make([]WorkerInfo, 0, len(metrics.User.Workers))
 
-	// 워커 정보 수집
+	// 워커 정보 수집 - TokensPerInstance가 0인 워커는 제외
 	for _, worker := range metrics.User.Workers {
+		// 토큰당 수익이 0인 워커는 건너뜀
+		if worker.TokensPerInstance <= 0 {
+			continue
+		}
+
 		info := WorkerInfo{
 			Name:               worker.Name,
 			TokensPerInstance:  worker.TokensPerInstance,
@@ -576,6 +582,10 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 
 	// 총 워커 수와 전체 생성량 계산
 	totalWorkers := len(workers)
+	if totalWorkers == 0 {
+		return "🖥️ 토큰당 수익이 있는 워커가 없습니다."
+	}
+
 	totalGenerations := 0
 	totalGenerationsLast24H := 0
 	for _, w := range workers {
@@ -584,7 +594,7 @@ func formatWorkerStats(metrics *api.MinuteMetrics) string {
 	}
 
 	// 헤더 메시지 생성
-	header := fmt.Sprintf("🖥️ 워커 현황 (총 %d개)\n", totalWorkers)
+	header := fmt.Sprintf("🖥️ 워커 현황 (총 %d개, 토큰당 수익 > 0)\n", totalWorkers)
 	header += fmt.Sprintf("📊 총 생성량: %d/시간 | 24시간: %d\n", totalGenerations, totalGenerationsLast24H)
 
 	// 총 페이지 수 계산
