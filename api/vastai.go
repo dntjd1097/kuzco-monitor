@@ -396,24 +396,24 @@ func (c *VastaiClient) MonitorAndRebootInstances(sendAlert func(string, string) 
 
 			log.Printf("Heartbeat timeout detected for instance %d, rebooting... (General.RunningInstanceCount: %d)",
 				instance.ID, currentMetrics.TotalInstances.Current)
-			if err := c.RebootInstance(instance.ID); err != nil {
-				log.Printf("Failed to reboot instance %d: %v", instance.ID, err)
-				if sendAlert != nil {
-					message := fmt.Sprintf("⚠️ Instance Reboot Failed\nInstance ID: %d\nError: %v", instance.ID, err)
-					if err := sendAlert(message, "error"); err != nil {
-						log.Printf("Failed to send reboot error alert: %v", err)
-					}
-				}
-				continue
-			}
-			log.Printf("Successfully rebooted instance %d", instance.ID)
-			if sendAlert != nil {
-				message := fmt.Sprintf("✅ Instance Reboot Success\nInstance ID: %d가 성공적으로 재시작되었습니다.\nGeneral.RunningInstanceCount: %d",
-					instance.ID, currentMetrics.TotalInstances.Current)
-				if err := sendAlert(message, "status"); err != nil {
-					log.Printf("Failed to send reboot success alert: %v", err)
-				}
-			}
+			// if err := c.RebootInstance(instance.ID); err != nil {
+			// 	log.Printf("Failed to reboot instance %d: %v", instance.ID, err)
+			// 	if sendAlert != nil {
+			// 		message := fmt.Sprintf("⚠️ Instance Reboot Failed\nInstance ID: %d\nError: %v", instance.ID, err)
+			// 		if err := sendAlert(message, "error"); err != nil {
+			// 			log.Printf("Failed to send reboot error alert: %v", err)
+			// 		}
+			// 	}
+			// 	continue
+			// }
+			// log.Printf("Successfully rebooted instance %d", instance.ID)
+			// if sendAlert != nil {
+			// 	message := fmt.Sprintf("✅ Instance Reboot Success\nInstance ID: %d가 성공적으로 재시작되었습니다.\nGeneral.RunningInstanceCount: %d",
+			// 		instance.ID, currentMetrics.TotalInstances.Current)
+			// 	if err := sendAlert(message, "status"); err != nil {
+			// 		log.Printf("Failed to send reboot success alert: %v", err)
+			// 	}
+			// }
 		}
 	}
 
