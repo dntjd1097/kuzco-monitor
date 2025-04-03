@@ -10,14 +10,16 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    deploy:
+    deploy-account1:
         runs-on: self-hosted
+        name: Deploy Account 1
+
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
 
             - name: Build Docker image
-              run: sudo docker build -t kuzco-monitor-bot:latest .
+              run: sudo docker build -t kuzco-monitor-bot:latest . --build-arg CONFIG_FILE=config.yaml
               working-directory: .
 
             - name: Stop previous Docker container
@@ -37,3 +39,33 @@ jobs:
                   -e TZ=Asia/Seoul \
                   --restart unless-stopped \
                   kuzco-monitor-bot:latest
+
+    deploy-account2:
+        runs-on: self-hosted
+        name: Deploy Account 2
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Build Docker image
+              run: sudo docker build -t kuzco-monitor-bot-account2:latest . --build-arg CONFIG_FILE=config1.yaml
+              working-directory: .
+
+            - name: Stop previous Docker container
+              run: sudo docker stop -t 10 kuzco-monitor-bot-account2 || true
+              continue-on-error: true
+
+            - name: Remove previous Docker container
+              run: sudo docker rm kuzco-monitor-bot-account2 || true
+              continue-on-error: true
+
+            - name: Run Docker container
+              run: |
+                  sudo docker image prune -f
+                  sudo docker run -d \
+                  --name kuzco-monitor-bot-account2 \
+                  -v /home/runner/.kuzco_bot/config1.yaml:/app/config.yaml \
+                  -e TZ=Asia/Seoul \
+                  --restart unless-stopped \
+                  kuzco-monitor-bot-account2:latest
