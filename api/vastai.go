@@ -396,6 +396,11 @@ func (c *VastaiClient) MonitorAndRebootInstances(sendAlert func(string, string) 
 
 			log.Printf("Heartbeat timeout detected for instance %d, rebooting... (General.RunningInstanceCount: %d)",
 				instance.ID, currentMetrics.TotalInstances.Current)
+			message := fmt.Sprintf("💔 Instance ID: %d \nGeneral.RunningInstanceCount: %d",
+				instance.ID, currentMetrics.TotalInstances.Current)
+			if err := sendAlert(message, "status"); err != nil {
+				log.Printf("Failed to send reboot success alert: %v", err)
+			}
 			// if err := c.RebootInstance(instance.ID); err != nil {
 			// 	log.Printf("Failed to reboot instance %d: %v", instance.ID, err)
 			// 	if sendAlert != nil {
