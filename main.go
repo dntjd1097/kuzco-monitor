@@ -493,45 +493,40 @@ func sendWorkerReport(telegramClient *telegram.Client, cfg *config.Config) {
 // startInstanceMonitoring starts the instance monitoring loop
 func startInstanceMonitoring(vastaiClient *api.VastaiClient, sendAlert func(string, string) error) {
 	log.Printf("Starting instance monitoring service...")
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
 
-	monitoringCount := 0
-	lastSuccessTime := time.Now()
+	// Stop channel for monitoring
+	stopChan := make(chan struct{})
 
-	for {
-		monitoringCount++
-		currentTime := time.Now()
-		log.Printf("=== Instance Monitoring Cycle #%d ===", monitoringCount)
-		log.Printf("Last successful check: %s (%.1f minutes ago)",
-			lastSuccessTime.Format("15:04:05"),
-			currentTime.Sub(lastSuccessTime).Minutes())
+	// Handle graceful shutdown
+	go func() {
+		// Wait for interrupt signal
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		<-sigChan
 
-		log.Printf("Starting instance status check...")
-		if err := vastaiClient.MonitorAndRebootInstances(sendAlert); err != nil {
-			log.Printf("[ERROR] Failed to monitor instances: %v", err)
-			if sendAlert != nil {
-				message := fmt.Sprintf("⚠️ Instance Monitoring Error\n시간: %s\n오류: %s",
-					currentTime.Format("15:04:05"),
-					err.Error())
-				log.Printf("Sending error alert: %s", message)
-				if err := sendAlert(message, "error"); err != nil {
-					log.Printf("[ERROR] Failed to send monitoring error alert: %v", err)
-				} else {
-					log.Printf("Successfully sent error alert")
-				}
+		// Signal monitoring to stop
+		close(stopChan)
+		log.Printf("Stopping instance monitoring...")
+	}()
+
+	// Start continuous monitoring
+	if err := vastaiClient.StartContinuousMonitoring(sendAlert, false, stopChan); err != nil {
+		log.Printf("[ERROR] Failed to start instance monitoring: %v", err)
+		if sendAlert != nil {
+			message := fmt.Sprintf("⚠️ Instance Monitoring Error\n시간: %s\n오류: %s",
+				time.Now().Format("15:04:05"),
+				err.Error())
+			log.Printf("Sending error alert: %s", message)
+			if err := sendAlert(message, "error"); err != nil {
+				log.Printf("[ERROR] Failed to send monitoring error alert: %v", err)
+			} else {
+				log.Printf("Successfully sent error alert")
 			}
-		} else {
-			lastSuccessTime = currentTime
-			log.Printf("Successfully completed instance monitoring at %s", currentTime.Format("15:04:05"))
 		}
-
-		nextCheckTime := currentTime.Add(5 * time.Minute)
-		log.Printf("Next monitoring check scheduled for: %s", nextCheckTime.Format("15:04:05"))
-		log.Printf("Waiting for next monitoring interval (5 minutes)...")
-		log.Printf("=== End of Monitoring Cycle #%d ===\n", monitoringCount)
-		<-ticker.C
 	}
+
+	// This function shouldn't exit until program ends
+	select {}
 }
 
 // formatWorkerStats 함수는 워커별 토큰당 수익을 포맷합니다

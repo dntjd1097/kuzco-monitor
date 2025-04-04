@@ -265,6 +265,7 @@ func (c *VastaiClient) RequestInstanceLogs(instanceID int) (*LogResponse, error)
 }
 
 // CheckInstanceLogs checks if the instance logs contain the heartbeat timeout error
+// Returns true if heartbeat timeouts are detected continuously for 3 minutes
 func (c *VastaiClient) CheckInstanceLogs(url string) (bool, error) {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -279,29 +280,39 @@ func (c *VastaiClient) CheckInstanceLogs(url string) (bool, error) {
 
 	// Split logs into lines and check for timeout patterns
 	lines := strings.Split(string(body), "\n")
-	timeoutCount := 0
-	lastTimeoutTime := time.Time{}
+
+	// Maps to track timeouts in each minute of the last 3 minutes
+	timeoutDetected := make(map[int]bool)
+	now := time.Now()
+
+	// Initialize the last 3 minutes as not having timeouts
+	for i := 0; i < 3; i++ {
+		timeoutDetected[i] = false
+	}
 
 	for _, line := range lines {
 		if strings.Contains(line, "Failed to send heartbeat: TimeoutError: timeout") {
 			// Parse the timestamp from the log line
 			if timestamp, err := parseLogTimestamp(line); err == nil {
-				// If this is our first timeout or it's been more than 5 minutes since the last one
-				if lastTimeoutTime.IsZero() || timestamp.Sub(lastTimeoutTime) > 5*time.Minute {
-					timeoutCount = 1
-				} else {
-					timeoutCount++
-				}
-				lastTimeoutTime = timestamp
-			}
+				// Calculate how many minutes ago this timeout occurred
+				minutesAgo := int(now.Sub(timestamp).Minutes())
 
-			// If we see 3 or more timeouts within 5 minutes, trigger a reboot
-			if timeoutCount >= 3 {
-				log.Printf("Detected %d heartbeat timeouts within 5 minutes, last at %s",
-					timeoutCount, lastTimeoutTime.Format(time.RFC3339))
-				return true, nil
+				// Only consider timeouts from the last 3 minutes
+				if minutesAgo >= 0 && minutesAgo < 3 {
+					timeoutDetected[minutesAgo] = true
+					log.Printf("Detected heartbeat timeout from %d minutes ago: %s",
+						minutesAgo, timestamp.Format(time.RFC3339))
+				}
 			}
 		}
+	}
+
+	// Check if we have timeouts in all 3 consecutive minutes
+	consecutiveTimeouts := timeoutDetected[0] && timeoutDetected[1] && timeoutDetected[2]
+
+	if consecutiveTimeouts {
+		log.Printf("Detected heartbeat timeouts continuously for the last 3 minutes")
+		return true, nil
 	}
 
 	return false, nil
@@ -350,77 +361,120 @@ func (c *VastaiClient) RebootInstance(instanceID int) error {
 
 // MonitorAndRebootInstances monitors all instances and reboots them if they have heartbeat timeout
 func (c *VastaiClient) MonitorAndRebootInstances(sendAlert func(string, string) error) error {
-	// Check General.RunningInstanceCount first
-	generalMetrics := GlobalHourlyStats.GetStats()
-	if generalMetrics.TotalInstances.Current == 0 {
-		log.Printf("General.RunningInstanceCount is 0, skipping monitoring")
+	return c.StartContinuousMonitoring(sendAlert, false, nil)
+}
+
+// StartContinuousMonitoring continuously monitors instances for heartbeat timeouts and reboots them if necessary
+// Set stopOnFirstExecution to true to run only once (useful for testing)
+func (c *VastaiClient) StartContinuousMonitoring(
+	sendAlert func(string, string) error,
+	stopOnFirstExecution bool,
+	stopChan <-chan struct{},
+) error {
+	log.Printf("Starting continuous instance monitoring...")
+	// Check every minute for timeout issues over a 3-minute period
+	monitoringInterval := 1 * time.Minute
+
+	// Function to check and reboot instances
+	checkAndReboot := func() error {
+		// Check General.RunningInstanceCount first
+		generalMetrics := GlobalHourlyStats.GetStats()
+		if generalMetrics.TotalInstances.Current == 0 {
+			log.Printf("General.RunningInstanceCount is 0, skipping monitoring")
+			return nil
+		}
+
+		instances, err := c.GetInstances()
+		if err != nil {
+			return fmt.Errorf("failed to get instances: %w", err)
+		}
+
+		for _, instance := range instances {
+			// Request logs for the instance
+			log.Printf("Requesting logs for instance %d (status: %s)...", instance.ID, instance.ActualStatus)
+			logResp, err := c.RequestInstanceLogs(instance.ID)
+			if err != nil {
+				log.Printf("Failed to request logs for instance %d: %v", instance.ID, err)
+				continue
+			}
+
+			// Wait a few seconds for the logs to be available
+			time.Sleep(5 * time.Second)
+			// Check if logs contain heartbeat timeout
+			hasTimeout, err := c.CheckInstanceLogs(logResp.TempDownloadURL)
+			if err != nil {
+				log.Printf("Failed to check logs for instance %d: %v", instance.ID, err)
+				continue
+			}
+
+			if hasTimeout {
+				// Double check General.RunningInstanceCount before rebooting
+				currentMetrics := GlobalHourlyStats.GetStats()
+				if currentMetrics.TotalInstances.Current == 0 {
+					log.Printf("General.RunningInstanceCount is 0, skipping reboot for instance %d", instance.ID)
+					if sendAlert != nil {
+						message := fmt.Sprintf("⚠️ Reboot Skipped\nInstance ID: %d\n사유: General.RunningInstanceCount가 0입니다.", instance.ID)
+						if err := sendAlert(message, "error"); err != nil {
+							log.Printf("Failed to send skip alert: %v", err)
+						}
+					}
+					continue
+				}
+
+				log.Printf("Heartbeat timeout detected continuously for 3 minutes on instance %d, rebooting... (General.RunningInstanceCount: %d)",
+					instance.ID, currentMetrics.TotalInstances.Current)
+
+				if err := c.RebootInstance(instance.ID); err != nil {
+					log.Printf("Failed to reboot instance %d: %v", instance.ID, err)
+					if sendAlert != nil {
+						message := fmt.Sprintf("⚠️ Instance Reboot Failed\nInstance ID: %d\nError: %v", instance.ID, err)
+						if err := sendAlert(message, "error"); err != nil {
+							log.Printf("Failed to send reboot error alert: %v", err)
+						}
+					}
+					continue
+				}
+				log.Printf("Successfully rebooted instance %d", instance.ID)
+				if sendAlert != nil {
+					message := fmt.Sprintf("✅ Instance Reboot Success\nInstance ID: %d가 성공적으로 재시작되었습니다.\nGeneral.RunningInstanceCount: %d",
+						instance.ID, currentMetrics.TotalInstances.Current)
+					if err := sendAlert(message, "status"); err != nil {
+						log.Printf("Failed to send reboot success alert: %v", err)
+					}
+				}
+			}
+		}
+
 		return nil
 	}
 
-	instances, err := c.GetInstances()
-	if err != nil {
-		return fmt.Errorf("failed to get instances: %w", err)
+	// If we only want to run once (for testing)
+	if stopOnFirstExecution {
+		return checkAndReboot()
 	}
 
-	for _, instance := range instances {
-		// Request logs for the instance
-		log.Printf("Requesting logs for instance %d (status: %s)...", instance.ID, instance.ActualStatus)
-		logResp, err := c.RequestInstanceLogs(instance.ID)
-		if err != nil {
-			log.Printf("Failed to request logs for instance %d: %v", instance.ID, err)
-			continue
-		}
-
-		// Wait a few seconds for the logs to be available
-		time.Sleep(5 * time.Second)
-		// Check if logs contain heartbeat timeout
-		hasTimeout, err := c.CheckInstanceLogs(logResp.TempDownloadURL)
-		if err != nil {
-			log.Printf("Failed to check logs for instance %d: %v", instance.ID, err)
-			continue
-		}
-
-		if hasTimeout {
-			// Double check General.RunningInstanceCount before rebooting
-			currentMetrics := GlobalHourlyStats.GetStats()
-			if currentMetrics.TotalInstances.Current == 0 {
-				log.Printf("General.RunningInstanceCount is 0, skipping reboot for instance %d", instance.ID)
-				if sendAlert != nil {
-					message := fmt.Sprintf("⚠️ Reboot Skipped\nInstance ID: %d\n사유: General.RunningInstanceCount가 0입니다.", instance.ID)
-					if err := sendAlert(message, "error"); err != nil {
-						log.Printf("Failed to send skip alert: %v", err)
-					}
-				}
-				continue
+	// Start continuous monitoring in a goroutine
+	go func() {
+		for {
+			if err := checkAndReboot(); err != nil {
+				log.Printf("Error during instance monitoring: %v", err)
 			}
 
-			log.Printf("Heartbeat timeout detected for instance %d, rebooting... (General.RunningInstanceCount: %d)",
-				instance.ID, currentMetrics.TotalInstances.Current)
-			// message := fmt.Sprintf("💔 Instance ID: %d \nGeneral.RunningInstanceCount: %d",
-			// 	instance.ID, currentMetrics.TotalInstances.Current)
-			// if err := sendAlert(message, "status"); err != nil {
-			// 	log.Printf("Failed to send reboot success alert: %v", err)
-			// }
-			if err := c.RebootInstance(instance.ID); err != nil {
-				log.Printf("Failed to reboot instance %d: %v", instance.ID, err)
-				if sendAlert != nil {
-					message := fmt.Sprintf("⚠️ Instance Reboot Failed\nInstance ID: %d\nError: %v", instance.ID, err)
-					if err := sendAlert(message, "error"); err != nil {
-						log.Printf("Failed to send reboot error alert: %v", err)
-					}
+			// Check if we should stop monitoring
+			if stopChan != nil {
+				select {
+				case <-stopChan:
+					log.Printf("Stopping instance monitoring...")
+					return
+				case <-time.After(monitoringInterval):
+					// Continue to next iteration
 				}
-				continue
-			}
-			log.Printf("Successfully rebooted instance %d", instance.ID)
-			if sendAlert != nil {
-				message := fmt.Sprintf("✅ Instance Reboot Success\nInstance ID: %d가 성공적으로 재시작되었습니다.\nGeneral.RunningInstanceCount: %d",
-					instance.ID, currentMetrics.TotalInstances.Current)
-				if err := sendAlert(message, "status"); err != nil {
-					log.Printf("Failed to send reboot success alert: %v", err)
-				}
+			} else {
+				// No stop channel provided, just sleep
+				time.Sleep(monitoringInterval)
 			}
 		}
-	}
+	}()
 
 	return nil
 }
