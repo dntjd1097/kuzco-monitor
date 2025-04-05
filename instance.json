@@ -42,5 +42,17 @@
     {
         "Gpu": "RTX 3070 Ti",
         "Price": 0.152
+    },
+    {
+        "Gpu": "RTX A4000",
+        "Price": 0.09
+    },
+    {
+        "Gpu": "RTX 3060 Laptop GPU",
+        "Price": 0.049
+    },
+    {
+        "Gpu": "GTX 1660 SUPER",
+        "Price": 0.05
     }
 ]
